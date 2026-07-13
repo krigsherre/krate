@@ -1,0 +1,13 @@
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: ../peer/peerpb
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../peer/peerpb
+    opt: paths=source_relative
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/krigsherre/krate/peer
