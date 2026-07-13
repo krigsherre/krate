@@ -49,26 +49,43 @@ Traditional distributed rate limiters hit Redis on **every single request**. At 
 
 ---
 
-## 🚀 Benchmark Performance
+## 🚀 Benchmark Performance (Production Grade)
 
-Krate provides a ridiculous performance boost over standard Redis rate limiters. In our aggressive benchmark suites, Krate handled millions of requests per second while reducing Redis traffic to almost nothing.
+Krate provides a staggering performance boost over standard Redis rate limiters, but it comes with architectural trade-offs. In our aggressive benchmark suites, Krate handles millions of requests per second and provides nanosecond p50 latencies, but can exhibit higher tail latencies (p99.9) during heavy lock contention for pre-borrowing.
 
 > **Hardware**: Standard developer machine (localhost Redis)<br>
 > **Traffic pattern**: Zipfian distribution (real-world skew)<br>
 > **Setup**: 4 Instances, 10,000 Keys
 
-| Scenario | Krate Throughput | Redis-Only Throughput | Speedup | Krate Latency (p50) | Redis Load Reduction |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **API Gateway** | <kbd>1.20M req/s</kbd> | 60.7K req/s | <span style="color:green">**19.8x**</span> | **2.7μs** | **99%** |
-| **Multi-Tenant SaaS** | <kbd>1.62M req/s</kbd> | 60.2K req/s | <span style="color:green">**27.0x**</span> | **2.4μs** | **99%** |
-| **Peer Token Flow** | <kbd>918.1K req/s</kbd> | 58.6K req/s | <span style="color:green">**15.7x**</span> | **14.2μs** | **100%** |
-| **IP Throttling** | <kbd>1.28M req/s</kbd> | 62.2K req/s | <span style="color:green">**20.6x**</span> | **3.3μs** | **99%** |
+### What are we benchmarking?
+To prove Krate handles every edge case, we test it against four distinct workload profiles:
+1. **Global API Gateway (Power-law Traffic)**: 1% of hot keys (e.g. your biggest customers) generate 50% of the total traffic. Tests Krate's ability to cache hot keys aggressively.
+2. **Multi-Tenant SaaS (High Concurrency)**: Heavy throughput spread evenly across tenants. Tests amortized borrowing.
+3. **Bot IP Throttling (Massive Cardinality)**: Millions of unique IPs with very tight limits (e.g., 60 req/min). Tests how Krate handles memory pressure and rapid eviction.
+4. **Mesh Peer-to-Peer Transfer (Zero Redis Fallback)**: Intentionally starves one instance to force it to ask a neighboring peer for tokens via gRPC. Tests the mesh network's ability to keep Redis traffic at 0.
 
-<br>
+### Throughput & Cost Reduction
 
-<div align="center">
-  <h2>🎉 At p50 latency, Krate is up to <b>2,743x faster</b> than standard Redis rate limiting.</h2>
-</div>
+| Scenario | Krate Throughput | Redis-Only Throughput | Speedup | Redis Load Reduction |
+| :--- | :--- | :--- | :--- | :--- |
+| **API Gateway** | <kbd>1.20M req/s</kbd> | 60.7K req/s | <span style="color:green">**19.8x**</span> | **99%** |
+| **Multi-Tenant SaaS** | <kbd>1.62M req/s</kbd> | 60.2K req/s | <span style="color:green">**27.0x**</span> | **99%** |
+| **Peer Token Flow** | <kbd>918.1K req/s</kbd> | 58.6K req/s | <span style="color:green">**15.7x**</span> | **100%** |
+| **IP Throttling** | <kbd>1.28M req/s</kbd> | 62.2K req/s | <span style="color:green">**20.6x**</span> | **99%** |
+
+### Latency Profile & The Tail Trade-off
+
+While Krate is up to **2,700x faster** on average (p50), the asynchronous pre-borrowing engine can introduce lock contention at the extreme tail (p99.9). Notice how IP Throttling's p99.9 spikes higher than Redis. 
+
+| Scenario | Latency p50<br>(Krate / Redis) | Latency p99<br>(Krate / Redis) | Latency p99.9<br>(Krate / Redis) |
+| :--- | :--- | :--- | :--- |
+| **API Gateway** | **2.7μs** / 6.6ms | **2.9ms** / 8.1ms | **9.5ms** / 18.3ms |
+| **Multi-Tenant SaaS** | **2.4μs** / 6.6ms | **2.6ms** / 8.6ms | **8.1ms** / 27.0ms |
+| **Peer Token Flow** | **14.2μs** / 1.7ms | **620μs** / 2.5ms | **1.4ms** / 8.0ms |
+| **IP Throttling** | **3.3μs** / 9.7ms | **4.3ms** / 10.7ms | <span style="color:red">33.5ms</span> / **12.3ms** |
+
+**The Trade-off Verdict**: You are trading extreme tail consistency (which occasionally blocks a goroutine for ~30ms while it waits for a Redis pre-borrow batch to finish) for an overall system throughput increase of **20x+** and a massive reduction in database costs.
+
 
 ---
 
