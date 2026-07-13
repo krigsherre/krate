@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/krate.png" alt="Krate Banner" width="100%">
+  <img src="assets/krate.png" alt="Krate Banner" width="480">
 
   <br><br>
 
