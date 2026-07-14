@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/krigsherre/krate/internal/clock"
 )
 
 type mockPool struct {
@@ -176,5 +178,83 @@ func TestManagerRecordConsumption(t *testing.T) {
 
 	if got := sizer.CurrentRate(); got != 50 {
 		t.Errorf("CurrentRate() = %.2f, want 50", got)
+	}
+}
+
+func TestManagerLeaseEviction(t *testing.T) {
+	mock := &mockPool{
+		borrowFn: func(_ context.Context, _, _ string, requested uint64, _ int64) (uint64, error) {
+			return 500, nil
+		},
+	}
+
+	fc := clock.NewFakeClock(time.Now())
+	sizer := NewAdaptiveSizer(0.3, 100, 1000, time.Second, false)
+	mgr := NewBorrowManager(mock, "inst-1", BorrowManagerOpts{
+		Sizer:    sizer,
+		LeaseTTL: 10 * time.Second,
+		Clock:    fc,
+	})
+
+	_, err := mgr.Acquire(context.Background(), "key1", 500)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	if got := mgr.Borrowed("key1"); got != 500 {
+		t.Errorf("Borrowed(key1) = %d, want 500", got)
+	}
+
+	// Advance clock past leaseTTL (10s)
+	fc.Advance(11 * time.Second)
+
+	if got := mgr.Borrowed("key1"); got != 0 {
+		t.Errorf("after lease expiration, Borrowed(key1) = %d, want 0", got)
+	}
+
+	// Verify AllBorrowed returns empty
+	all := mgr.AllBorrowed(0)
+	if len(all) != 0 {
+		t.Errorf("after lease expiration, AllBorrowed = %v, want empty", all)
+	}
+}
+
+func TestManagerTopN(t *testing.T) {
+	mock := &mockPool{
+		borrowFn: func(_ context.Context, key, _ string, requested uint64, _ int64) (uint64, error) {
+			if key == "key-low" {
+				return 100, nil
+			} else if key == "key-mid" {
+				return 200, nil
+			}
+			return 300, nil
+		},
+	}
+
+	sizer := NewAdaptiveSizer(0.3, 100, 1000, time.Second, false)
+	mgr := NewBorrowManager(mock, "inst-1", BorrowManagerOpts{
+		Sizer:    sizer,
+		LeaseTTL: 10 * time.Second,
+	})
+
+	// Acquire different amounts for different keys
+	mgr.Acquire(context.Background(), "key-low", 100)
+	mgr.Acquire(context.Background(), "key-high", 300)
+	mgr.Acquire(context.Background(), "key-mid", 200)
+
+	// Fetch Top 2
+	top := mgr.AllBorrowed(2)
+	if len(top) != 2 {
+		t.Fatalf("AllBorrowed(2) returned %d keys, want 2", len(top))
+	}
+
+	if _, exists := top["key-high"]; !exists {
+		t.Errorf("missing key-high in top 2")
+	}
+	if _, exists := top["key-mid"]; !exists {
+		t.Errorf("missing key-mid in top 2")
+	}
+	if _, exists := top["key-low"]; exists {
+		t.Errorf("unexpected key-low in top 2")
 	}
 }
