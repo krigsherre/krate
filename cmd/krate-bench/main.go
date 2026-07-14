@@ -823,11 +823,11 @@ type scenarioResult struct {
 
 func printSummary(all []scenarioResult) {
 	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                              Summary                                              ║")
-	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════════════╣")
-	fmt.Println("║  Scenario                 │  krate RPS  │ Redis RPS │ Speedup │   p50    │   p99   ║")
-	fmt.Println("╠═══════════════════════════╪═════════════╪═══════════╪═════════╪══════════╪═════════╣")
+	fmt.Println("╔═════════════════════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                                           Summary                                           ║")
+	fmt.Println("╠═════════════════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  Scenario                 │  krate RPS  │ Redis RPS │ Speedup │   p50   │   p99   │  p99.9  ║")
+	fmt.Println("╠═══════════════════════════╪═════════════╪═══════════╪═════════╪═════════╪═════════╪═════════╣")
 
 	for _, s := range all {
 		name := s.cfg.Name
@@ -835,12 +835,15 @@ func printSummary(all []scenarioResult) {
 			name = name[:23]
 		}
 		speedup := s.kr.rps / math.Max(s.rd.rps, 1)
-		fmt.Printf("║  %-23s │ %9s/s │ %7s/s │  %5.1fx │ %6s  │ %6s  ║\n",
-			name, fmtF(s.kr.rps), fmtF(s.rd.rps), speedup,
-			fmtNs(s.kr.p50), fmtNs(s.kr.p99))
+		krateRps := fmt.Sprintf("%s/s", fmtF(s.kr.rps))
+		redisRps := fmt.Sprintf("%s/s", fmtF(s.rd.rps))
+		speedupStr := fmt.Sprintf("%.1fx", speedup)
+		fmt.Printf("║  %-23s │ %11s │ %9s │ %7s │ %7s │ %7s │ %7s ║\n",
+			name, krateRps, redisRps, speedupStr,
+			fmtNs(s.kr.p50), fmtNs(s.kr.p99), fmtNs(s.kr.p999))
 	}
 
-	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("╠═════════════════════════════════════════════════════════════════════════════════════════════╣")
 	fmt.Println("║")
 	for _, s := range all {
 		redisPerReq := float64(s.kr.pm.redis+s.kr.pm.redisEx) / float64(s.kr.total)
@@ -858,7 +861,7 @@ func printSummary(all []scenarioResult) {
 			s.cfg.Name, localPct, reduction, skipPct)
 	}
 	fmt.Println("║")
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("╚═════════════════════════════════════════════════════════════════════════════════════════════╝")
 }
 
 func main() {
