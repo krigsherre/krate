@@ -200,7 +200,7 @@ func (*PingResponse) Descriptor() ([]byte, []int) {
 type GossipRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OriginId      string                 `protobuf:"bytes,1,opt,name=origin_id,json=originId,proto3" json:"origin_id,omitempty"`
-	CmsState      []byte                 `protobuf:"bytes,2,opt,name=cms_state,json=cmsState,proto3" json:"cms_state,omitempty"`
+	Consumed      map[string]uint64      `protobuf:"bytes,2,rep,name=consumed,proto3" json:"consumed,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	Borrowed      map[string]uint64      `protobuf:"bytes,3,rep,name=borrowed,proto3" json:"borrowed,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -243,9 +243,9 @@ func (x *GossipRequest) GetOriginId() string {
 	return ""
 }
 
-func (x *GossipRequest) GetCmsState() []byte {
+func (x *GossipRequest) GetConsumed() map[string]uint64 {
 	if x != nil {
-		return x.CmsState
+		return x.Consumed
 	}
 	return nil
 }
@@ -305,11 +305,14 @@ const file_krate_proto_rawDesc = "" +
 	"\x10TransferResponse\x12\x18\n" +
 	"\agranted\x18\x01 \x01(\x04R\agranted\"\r\n" +
 	"\vPingRequest\"\x0e\n" +
-	"\fPingResponse\"\xc9\x01\n" +
+	"\fPingResponse\"\xac\x02\n" +
 	"\rGossipRequest\x12\x1b\n" +
-	"\torigin_id\x18\x01 \x01(\tR\boriginId\x12\x1b\n" +
-	"\tcms_state\x18\x02 \x01(\fR\bcmsState\x12A\n" +
+	"\torigin_id\x18\x01 \x01(\tR\boriginId\x12A\n" +
+	"\bconsumed\x18\x02 \x03(\v2%.krate.v1.GossipRequest.ConsumedEntryR\bconsumed\x12A\n" +
 	"\bborrowed\x18\x03 \x03(\v2%.krate.v1.GossipRequest.BorrowedEntryR\bborrowed\x1a;\n" +
+	"\rConsumedEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\x1a;\n" +
 	"\rBorrowedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x10\n" +
@@ -333,7 +336,7 @@ func file_krate_proto_rawDescGZIP() []byte {
 	return file_krate_proto_rawDescData
 }
 
-var file_krate_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_krate_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_krate_proto_goTypes = []any{
 	(*TransferRequest)(nil),  // 0: krate.v1.TransferRequest
 	(*TransferResponse)(nil), // 1: krate.v1.TransferResponse
@@ -341,21 +344,23 @@ var file_krate_proto_goTypes = []any{
 	(*PingResponse)(nil),     // 3: krate.v1.PingResponse
 	(*GossipRequest)(nil),    // 4: krate.v1.GossipRequest
 	(*GossipResponse)(nil),   // 5: krate.v1.GossipResponse
-	nil,                      // 6: krate.v1.GossipRequest.BorrowedEntry
+	nil,                      // 6: krate.v1.GossipRequest.ConsumedEntry
+	nil,                      // 7: krate.v1.GossipRequest.BorrowedEntry
 }
 var file_krate_proto_depIdxs = []int32{
-	6, // 0: krate.v1.GossipRequest.borrowed:type_name -> krate.v1.GossipRequest.BorrowedEntry
-	0, // 1: krate.v1.KratePeerService.TransferTokens:input_type -> krate.v1.TransferRequest
-	2, // 2: krate.v1.KratePeerService.Ping:input_type -> krate.v1.PingRequest
-	4, // 3: krate.v1.KratePeerService.Gossip:input_type -> krate.v1.GossipRequest
-	1, // 4: krate.v1.KratePeerService.TransferTokens:output_type -> krate.v1.TransferResponse
-	3, // 5: krate.v1.KratePeerService.Ping:output_type -> krate.v1.PingResponse
-	5, // 6: krate.v1.KratePeerService.Gossip:output_type -> krate.v1.GossipResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	6, // 0: krate.v1.GossipRequest.consumed:type_name -> krate.v1.GossipRequest.ConsumedEntry
+	7, // 1: krate.v1.GossipRequest.borrowed:type_name -> krate.v1.GossipRequest.BorrowedEntry
+	0, // 2: krate.v1.KratePeerService.TransferTokens:input_type -> krate.v1.TransferRequest
+	2, // 3: krate.v1.KratePeerService.Ping:input_type -> krate.v1.PingRequest
+	4, // 4: krate.v1.KratePeerService.Gossip:input_type -> krate.v1.GossipRequest
+	1, // 5: krate.v1.KratePeerService.TransferTokens:output_type -> krate.v1.TransferResponse
+	3, // 6: krate.v1.KratePeerService.Ping:output_type -> krate.v1.PingResponse
+	5, // 7: krate.v1.KratePeerService.Gossip:output_type -> krate.v1.GossipResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_krate_proto_init() }
@@ -369,7 +374,7 @@ func file_krate_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_krate_proto_rawDesc), len(file_krate_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

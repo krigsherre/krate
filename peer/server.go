@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	_ "google.golang.org/grpc/encoding/gzip"
 
 	kratev1 "github.com/krigsherre/krate/peer/peerpb"
 )
@@ -21,7 +22,7 @@ type TokenServer struct {
 	logger          *slog.Logger
 	tokenAccessor   func(key string, requested uint64) (uint64, error)
 	tokenTransferer func(key string, amount uint64) (uint64, error)
-	gossipHandler   func(originID string, cmsState []byte, borrowed map[string]uint64) error
+	gossipHandler   func(originID string, consumed map[string]uint64, borrowed map[string]uint64) error
 
 	server *grpc.Server
 	lis    net.Listener
@@ -47,7 +48,7 @@ func (s *TokenServer) SetTokenTransferer(fn func(key string, amount uint64) (uin
 	s.tokenTransferer = fn
 }
 
-func (s *TokenServer) SetGossipHandler(fn func(originID string, cmsState []byte, borrowed map[string]uint64) error) {
+func (s *TokenServer) SetGossipHandler(fn func(originID string, consumed map[string]uint64, borrowed map[string]uint64) error) {
 	s.gossipHandler = fn
 }
 
@@ -125,7 +126,7 @@ func (s *TokenServer) Ping(ctx context.Context, req *kratev1.PingRequest) (*krat
 
 func (s *TokenServer) Gossip(ctx context.Context, req *kratev1.GossipRequest) (*kratev1.GossipResponse, error) {
 	if s.gossipHandler != nil {
-		if err := s.gossipHandler(req.OriginId, req.CmsState, req.Borrowed); err != nil {
+		if err := s.gossipHandler(req.OriginId, req.GetConsumed(), req.GetBorrowed()); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
