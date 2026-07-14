@@ -3,6 +3,7 @@ package borrow
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -97,6 +98,8 @@ func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64) (u
 	if !ok {
 		ks = &keyState{}
 		m.activeKeys[key] = ks
+	} else if ks.borrowed > 0 && m.clock.Now().Sub(ks.lastBorrow) > m.leaseTTL {
+		ks.borrowed = 0
 	}
 	ks.borrowed += granted
 	ks.lastBorrow = m.clock.Now()
@@ -162,19 +165,46 @@ func (m *BorrowManager) Borrowed(key string) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ks, ok := m.activeKeys[key]; ok {
+		if ks.borrowed > 0 && m.clock.Now().Sub(ks.lastBorrow) > m.leaseTTL {
+			delete(m.activeKeys, key)
+			return 0
+		}
 		return ks.borrowed
 	}
 	return 0
 }
 
-func (m *BorrowManager) AllBorrowed() map[string]uint64 {
+type keyVal struct {
+	key string
+	val uint64
+}
+
+func (m *BorrowManager) AllBorrowed(maxKeys int) map[string]uint64 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make(map[string]uint64, len(m.activeKeys))
+	now := m.clock.Now()
+	var active []keyVal
+
 	for k, ks := range m.activeKeys {
-		if ks.borrowed > 0 {
-			out[k] = ks.borrowed
+		if ks.borrowed > 0 && now.Sub(ks.lastBorrow) > m.leaseTTL {
+			delete(m.activeKeys, k)
+			continue
 		}
+		if ks.borrowed > 0 {
+			active = append(active, keyVal{key: k, val: ks.borrowed})
+		}
+	}
+	m.mu.Unlock()
+
+	if maxKeys > 0 && len(active) > maxKeys {
+		sort.Slice(active, func(i, j int) bool {
+			return active[i].val > active[j].val
+		})
+		active = active[:maxKeys]
+	}
+
+	out := make(map[string]uint64, len(active))
+	for _, kv := range active {
+		out[kv.key] = kv.val
 	}
 	return out
 }
