@@ -14,6 +14,7 @@ import (
 	"github.com/krigsherre/krate/metrics"
 	"github.com/krigsherre/krate/peer"
 	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	"github.com/krigsherre/krate/routing"
 	"github.com/krigsherre/krate/sketch"
 	"github.com/redis/go-redis/v9"
 )
@@ -27,23 +28,26 @@ type bucketShard struct {
 }
 
 type limiter struct {
-	opts       options
-	logger     *slog.Logger
-	metrics    *metrics.Collector
-	clock      Clock
-	shards     [shardCount]bucketShard
-	pool       *borrow.RedisPool
-	borrowMgr  *borrow.BorrowManager
-	acquirer   *peer.Acquirer
-	mesh       *peer.Mesh
-	server     *peer.TokenServer
-	gossiper   *sketch.Gossiper
-	heartbeat  *cluster.Heartbeat
-	membership *cluster.Membership
-	localCMS   *sketch.CountMinSketch
-	closed     atomic.Bool
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	opts             options
+	logger           *slog.Logger
+	metrics          *metrics.Collector
+	clock            Clock
+	shards           [shardCount]bucketShard
+	pool             *borrow.RedisPool
+	borrowMgr        *borrow.BorrowManager
+	acquirer         *peer.Acquirer
+	mesh             *peer.Mesh
+	server           *peer.TokenServer
+	gossiper         *sketch.Gossiper
+	heartbeat        *cluster.Heartbeat
+	membership       *cluster.Membership
+	router           routing.Router
+	lastSentGossip   map[string]map[string]uint64
+	lastSentConsumed map[string]map[string]uint64
+	gossipMu         sync.Mutex
+	closed           atomic.Bool
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
 }
 
 func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
@@ -75,7 +79,6 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 		Logger:   logger,
 	})
 
-	localCMS := sketch.NewCMS(opts.cmsWidth, opts.cmsDepth, opts.cmsSeed)
 	gossiper := sketch.NewGossiper()
 	membership := cluster.NewMembership(rdb, opts.heartbeatTimeout, logger)
 
@@ -84,17 +87,19 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	l := &limiter{
-		opts:       opts,
-		logger:     logger,
-		metrics:    mc,
-		clock:      clk,
-		pool:       pool,
-		borrowMgr:  bm,
-		gossiper:   gossiper,
-		localCMS:   localCMS,
-		server:     server,
-		membership: membership,
-		cancel:     cancel,
+		opts:             opts,
+		logger:           logger,
+		metrics:          mc,
+		clock:            clk,
+		pool:             pool,
+		borrowMgr:        bm,
+		gossiper:         gossiper,
+		server:           server,
+		membership:       membership,
+		router:           opts.router,
+		lastSentGossip:   make(map[string]map[string]uint64),
+		lastSentConsumed: make(map[string]map[string]uint64),
+		cancel:           cancel,
 	}
 	for i := range l.shards {
 		l.shards[i].buckets = make(map[string]*bucket)
@@ -126,16 +131,8 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 		return 0, nil
 	})
 
-	server.SetGossipHandler(func(originID string, cmsState []byte, borrowed map[string]uint64) error {
-		var peerCms *sketch.CountMinSketch
-		var err error
-		if len(cmsState) > 0 {
-			peerCms, err = sketch.Unmarshal(cmsState)
-			if err != nil {
-				return err
-			}
-		}
-		l.gossiper.UpdatePeer(originID, peerCms, borrowed)
+	server.SetGossipHandler(func(originID string, consumed map[string]uint64, borrowed map[string]uint64) error {
+		l.gossiper.UpdatePeer(originID, consumed, borrowed)
 		return nil
 	})
 
@@ -160,7 +157,7 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 	hb.Start(ctx)
 	l.heartbeat = hb
 
-	mesh := peer.NewMesh(opts.instanceID, membership, opts.gossipInterval, logger)
+	mesh := peer.NewMesh(opts.instanceID, membership, opts.gossipInterval, opts.gzipCompression, logger)
 	mesh.Start(ctx)
 	l.mesh = mesh
 
@@ -215,14 +212,12 @@ func (l *limiter) gossipLoop(ctx context.Context) {
 }
 
 func (l *limiter) gossipOnce(ctx context.Context) {
-	cmsState := l.localCMS.Marshal()
-	borrowed := l.borrowMgr.AllBorrowed()
-
-	req := &kratev1.GossipRequest{
-		OriginId: l.opts.instanceID,
-		CmsState: cmsState,
-		Borrowed: borrowed,
+	currentBorrowed := l.borrowMgr.AllBorrowed(l.opts.maxGossipKeys)
+	keys := make([]string, 0, len(currentBorrowed))
+	for k := range currentBorrowed {
+		keys = append(keys, k)
 	}
+	currentConsumed := l.getBucketsConsumed(keys)
 
 	peers := l.mesh.GetPeers()
 	for _, p := range peers {
@@ -230,15 +225,91 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 			continue
 		}
 
-		go func(client kratev1.KratePeerServiceClient, addr string) {
+		peerID := p.ID
+		client := p.Client
+		addr := p.GRPCAddr
+
+		l.gossipMu.Lock()
+		if _, ok := l.lastSentGossip[peerID]; !ok {
+			l.lastSentGossip[peerID] = make(map[string]uint64)
+		}
+		lastSentBor := l.lastSentGossip[peerID]
+
+		if _, ok := l.lastSentConsumed[peerID]; !ok {
+			l.lastSentConsumed[peerID] = make(map[string]uint64)
+		}
+		lastSentCon := l.lastSentConsumed[peerID]
+
+		// Build delta borrowed
+		deltaBorrowed := make(map[string]uint64)
+		for k, v := range currentBorrowed {
+			if lastSentBor[k] != v {
+				deltaBorrowed[k] = v
+			}
+		}
+		for k := range lastSentBor {
+			if _, exists := currentBorrowed[k]; !exists {
+				deltaBorrowed[k] = 0
+			}
+		}
+
+		// Build delta consumed
+		deltaConsumed := make(map[string]uint64)
+		for k, v := range currentConsumed {
+			if lastSentCon[k] != v {
+				deltaConsumed[k] = v
+			}
+		}
+		for k := range lastSentCon {
+			if _, exists := currentConsumed[k]; !exists {
+				deltaConsumed[k] = 0
+			}
+		}
+		l.gossipMu.Unlock()
+
+		if len(deltaBorrowed) == 0 && len(currentBorrowed) == 0 &&
+			len(deltaConsumed) == 0 && len(currentConsumed) == 0 {
+			continue
+		}
+
+		req := &kratev1.GossipRequest{
+			OriginId: l.opts.instanceID,
+			Consumed: deltaConsumed,
+			Borrowed: deltaBorrowed,
+		}
+
+		go func(pid string, db, dc map[string]uint64) {
 			gCtx, cancel := context.WithTimeout(ctx, l.opts.gossipInterval/2)
 			defer cancel()
 
 			_, err := client.Gossip(gCtx, req)
 			if err != nil {
 				l.logger.Debug("failed to gossip to peer", "addr", addr, "error", err)
+				return
 			}
-		}(p.Client, p.GRPCAddr)
+
+			// Update sent states on success
+			l.gossipMu.Lock()
+			defer l.gossipMu.Unlock()
+
+			lsBor := l.lastSentGossip[pid]
+			for k, v := range db {
+				if v == 0 {
+					delete(lsBor, k)
+				} else {
+					lsBor[k] = v
+				}
+			}
+
+			lsCon := l.lastSentConsumed[pid]
+			for k, v := range dc {
+				if v == 0 {
+					delete(lsCon, k)
+				} else {
+					lsCon[k] = v
+				}
+			}
+		}(peerID, deltaBorrowed, deltaConsumed)
 	}
 }
 
@@ -256,7 +327,7 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 
 	if b.tryConsume(n) {
 		rem := b.remaining()
-		l.localCMS.Add(key, n)
+		b.recordConsumption(n)
 		l.borrowMgr.RecordConsumption(key, n)
 		l.metrics.RecordLocalHit(key)
 		l.metrics.RecordAllowed(key)
@@ -278,7 +349,7 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 		}
 		if b.tryConsume(n) {
 			rem := b.remaining()
-			l.localCMS.Add(key, n)
+			b.recordConsumption(n)
 			l.borrowMgr.RecordConsumption(key, n)
 			l.metrics.RecordAllowed(key)
 			l.metrics.SetLocalTokens(key, rem)
@@ -287,53 +358,73 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 		}
 	}
 
-	if b.IsRedisExhausted() {
+	redisExhausted := b.IsRedisExhausted()
+	if redisExhausted {
 		l.metrics.RecordRedisSkip(key)
-	} else {
-		redisStart := l.clock.Now()
-		granted, err := l.borrowMgr.Acquire(ctx, key, n)
-		l.metrics.ObserveRequestDuration("redis", l.clock.Since(redisStart))
+	}
+	peerChecked := false
 
+	for {
+		rc := &routing.RouteContext{
+			Key:            key,
+			Need:           n,
+			RedisExhausted: redisExhausted,
+			HasPeers:       l.acquirer != nil && !peerChecked,
+		}
+
+		decision, err := l.router.Decide(ctx, rc)
 		if err != nil {
 			return false, err
 		}
-		if granted > 0 {
-			b.ClearRedisExhausted()
-			b.refill(granted)
-			l.metrics.RecordRedisBorrow(key, true)
-			l.metrics.SetBorrowedTokens(key, l.borrowMgr.Borrowed(key))
-			if b.tryConsume(n) {
-				rem := b.remaining()
-				l.localCMS.Add(key, n)
-				l.borrowMgr.RecordConsumption(key, n)
-				l.metrics.RecordAllowed(key)
-				l.metrics.SetLocalTokens(key, rem)
-				l.metrics.ObserveLocalTokensRemaining(rem)
-				return true, nil
+
+		if decision == routing.DecisionRedis {
+			redisStart := l.clock.Now()
+			granted, err := l.borrowMgr.Acquire(ctx, key, n)
+			l.metrics.ObserveRequestDuration("redis", l.clock.Since(redisStart))
+
+			if err != nil {
+				return false, err
+			}
+			if granted > 0 {
+				b.ClearRedisExhausted()
+				b.refill(granted)
+				l.metrics.RecordRedisBorrow(key, true)
+				l.metrics.SetBorrowedTokens(key, l.borrowMgr.Borrowed(key))
+				if b.tryConsume(n) {
+					rem := b.remaining()
+					b.recordConsumption(n)
+					l.borrowMgr.RecordConsumption(key, n)
+					l.metrics.RecordAllowed(key)
+					l.metrics.SetLocalTokens(key, rem)
+					l.metrics.ObserveLocalTokensRemaining(rem)
+					return true, nil
+				}
+			} else {
+				b.MarkRedisExhausted()
+				l.metrics.RecordRedisBorrow(key, false)
+				redisExhausted = true
+			}
+		} else if decision == routing.DecisionPeer {
+			peerChecked = true
+			peerStart := l.clock.Now()
+			peerTokens, err := l.acquireFromPeers(ctx, key, n)
+			l.metrics.ObserveRequestDuration("peer", l.clock.Since(peerStart))
+
+			if err == nil && peerTokens > 0 {
+				b.refill(peerTokens)
+				l.metrics.RecordTokenReceived(peerTokens)
+				if b.tryConsume(n) {
+					rem := b.remaining()
+					b.recordConsumption(n)
+					l.borrowMgr.RecordConsumption(key, n)
+					l.metrics.RecordAllowed(key)
+					l.metrics.SetLocalTokens(key, rem)
+					l.metrics.ObserveLocalTokensRemaining(rem)
+					return true, nil
+				}
 			}
 		} else {
-			b.MarkRedisExhausted()
-			l.metrics.RecordRedisBorrow(key, false)
-		}
-	}
-
-	if l.acquirer != nil {
-		peerStart := l.clock.Now()
-		peerTokens, err := l.acquireFromPeers(ctx, key, n)
-		l.metrics.ObserveRequestDuration("peer", l.clock.Since(peerStart))
-
-		if err == nil && peerTokens > 0 {
-			b.refill(peerTokens)
-			l.metrics.RecordTokenReceived(peerTokens)
-			if b.tryConsume(n) {
-				rem := b.remaining()
-				l.localCMS.Add(key, n)
-				l.borrowMgr.RecordConsumption(key, n)
-				l.metrics.RecordAllowed(key)
-				l.metrics.SetLocalTokens(key, rem)
-				l.metrics.ObserveLocalTokensRemaining(rem)
-				return true, nil
-			}
+			break
 		}
 	}
 
@@ -417,6 +508,7 @@ func (l *limiter) resetWindow(ctx context.Context, key string, nowMs int64) erro
 	}
 
 	b.ClearRedisExhausted()
+	b.resetConsumed()
 
 	b.window.UpdateWindowStart(newWindowStart)
 	l.metrics.RecordWindowReset(key)
@@ -466,4 +558,42 @@ func (l *limiter) Close() error {
 
 	l.logger.Info("limiter closed", "id", l.opts.instanceID)
 	return nil
+}
+
+func (l *limiter) getBucketConsumed(key string) uint64 {
+	s := &l.shards[shardIndex(key)]
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if b, ok := s.buckets[key]; ok {
+		return b.getConsumed()
+	}
+	return 0
+}
+
+func (l *limiter) getBucketsConsumed(keys []string) map[string]uint64 {
+	var shardToKeys [shardCount][]string
+	for _, k := range keys {
+		idx := shardIndex(k)
+		shardToKeys[idx] = append(shardToKeys[idx], k)
+	}
+
+	out := make(map[string]uint64, len(keys))
+
+	for idx, shKeys := range shardToKeys {
+		if len(shKeys) == 0 {
+			continue
+		}
+		s := &l.shards[idx]
+		s.mu.RLock()
+		for _, k := range shKeys {
+			if b, ok := s.buckets[k]; ok {
+				if val := b.getConsumed(); val > 0 {
+					out[k] = val
+				}
+			}
+		}
+		s.mu.RUnlock()
+	}
+
+	return out
 }

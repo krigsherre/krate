@@ -32,7 +32,7 @@ func TestMeshDiscovery(t *testing.T) {
 		},
 	}
 
-	m := NewMesh("self", disc, time.Hour, testLogger(t))
+	m := NewMesh("self", disc, time.Hour, false, testLogger(t))
 	defer m.Stop()
 	m.refresh(context.Background())
 
@@ -58,7 +58,7 @@ func TestMeshGetPeer(t *testing.T) {
 		},
 	}
 
-	m := NewMesh("self", disc, time.Hour, testLogger(t))
+	m := NewMesh("self", disc, time.Hour, false, testLogger(t))
 	defer m.Stop()
 	m.refresh(context.Background())
 
@@ -82,7 +82,7 @@ func TestMeshRemoval(t *testing.T) {
 		},
 	}
 
-	m := NewMesh("self", disc, time.Hour, testLogger(t))
+	m := NewMesh("self", disc, time.Hour, false, testLogger(t))
 	defer m.Stop()
 	m.refresh(context.Background())
 
@@ -112,7 +112,7 @@ func TestMeshGossipAddrs(t *testing.T) {
 		},
 	}
 
-	m := NewMesh("self", disc, time.Hour, testLogger(t))
+	m := NewMesh("self", disc, time.Hour, false, testLogger(t))
 	defer m.Stop()
 	m.refresh(context.Background())
 

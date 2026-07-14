@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/krigsherre/krate/routing"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -45,6 +46,10 @@ type options struct {
 	logger  *slog.Logger
 	metrics prometheus.Registerer
 	clock   Clock
+
+	router        routing.Router
+	maxGossipKeys int
+	gzipCompression bool
 }
 
 func defaultOptions() options {
@@ -72,6 +77,9 @@ func defaultOptions() options {
 		heartbeatTimeout:   5 * time.Second,
 		preBorrowEnabled:   true,
 		preBorrowThreshold: 0.20,
+		router:             routing.NewDefaultRouter(),
+		maxGossipKeys:      3000,
+		gzipCompression:    false,
 	}
 }
 
@@ -126,4 +134,16 @@ func WithPreBorrowThreshold(f float64) Option {
 		}
 		o.preBorrowThreshold = f
 	}
+}
+
+func WithRouter(r routing.Router) Option {
+	return func(o *options) { o.router = r }
+}
+
+func WithMaxGossipKeys(n int) Option {
+	return func(o *options) { o.maxGossipKeys = n }
+}
+
+func WithGzipCompression(b bool) Option {
+	return func(o *options) { o.gzipCompression = b }
 }

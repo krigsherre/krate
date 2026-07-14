@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip"
 
 	"github.com/krigsherre/krate/cluster"
 	kratev1 "github.com/krigsherre/krate/peer/peerpb"
@@ -35,23 +36,25 @@ type Mesh struct {
 	peers map[string]*Peer
 	conns map[string]*grpc.ClientConn
 
-	logger   *slog.Logger
-	interval time.Duration
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	logger      *slog.Logger
+	interval    time.Duration
+	gzipEnabled bool
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
-func NewMesh(instanceID string, membership MemberDiscoverer, interval time.Duration, logger *slog.Logger) *Mesh {
+func NewMesh(instanceID string, membership MemberDiscoverer, interval time.Duration, gzipEnabled bool, logger *slog.Logger) *Mesh {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Mesh{
-		instanceID: instanceID,
-		membership: membership,
-		peers:      make(map[string]*Peer),
-		conns:      make(map[string]*grpc.ClientConn),
-		logger:     logger,
-		interval:   interval,
+		instanceID:  instanceID,
+		membership:  membership,
+		peers:       make(map[string]*Peer),
+		conns:       make(map[string]*grpc.ClientConn),
+		logger:      logger,
+		interval:    interval,
+		gzipEnabled: gzipEnabled,
 	}
 }
 
@@ -132,9 +135,13 @@ func (m *Mesh) refresh(ctx context.Context) {
 			grpcAddr = member.GossipAddr
 		}
 
-		conn, err := grpc.NewClient(grpcAddr,
+		dialOpts := []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		)
+		}
+		if m.gzipEnabled {
+			dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor("gzip")))
+		}
+		conn, err := grpc.NewClient(grpcAddr, dialOpts...)
 
 		p := &Peer{
 			ID:         id,
