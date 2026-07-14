@@ -6,20 +6,23 @@ import (
 )
 
 type bucket struct {
-	local  *LocalBucket
-	window *Window
-	key    string
+	local    *LocalBucket
+	window   *Window
+	key      string
+	consumed atomic.Uint64
 
 	redisExhausted atomic.Bool
 	preBorrowing   atomic.Bool
 }
 
 func newBucket(key string, limit uint64, windowType WindowType, windowSize time.Duration) *bucket {
-	return &bucket{
+	b := &bucket{
 		local:  NewLocalBucket(key, 0),
 		window: NewWindow(windowType, windowSize, limit),
 		key:    key,
 	}
+	b.consumed.Store(0)
+	return b
 }
 
 func (b *bucket) tryConsume(n uint64) bool {
@@ -62,4 +65,16 @@ func (b *bucket) belowPreBorrowThreshold(minBorrow uint64, threshold float64) bo
 		trigger = 1
 	}
 	return b.remaining() < trigger
+}
+
+func (b *bucket) recordConsumption(n uint64) {
+	b.consumed.Add(n)
+}
+
+func (b *bucket) getConsumed() uint64 {
+	return b.consumed.Load()
+}
+
+func (b *bucket) resetConsumed() {
+	b.consumed.Store(0)
 }

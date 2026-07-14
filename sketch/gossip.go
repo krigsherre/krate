@@ -12,32 +12,54 @@ type PeerEntry struct {
 
 type Gossiper struct {
 	mu           sync.RWMutex
-	peerCMS      map[string]*CountMinSketch
+	peerConsumed map[string]map[string]uint64
 	peerBorrowed map[string]map[string]uint64
 }
 
 func NewGossiper() *Gossiper {
 	return &Gossiper{
-		peerCMS:      make(map[string]*CountMinSketch),
+		peerConsumed: make(map[string]map[string]uint64),
 		peerBorrowed: make(map[string]map[string]uint64),
 	}
 }
 
-func (g *Gossiper) UpdatePeer(id string, cms *CountMinSketch, borrowed map[string]uint64) {
+func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed map[string]uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.peerCMS[id] = cms
-	cp := make(map[string]uint64, len(borrowed))
-	for k, v := range borrowed {
-		cp[k] = v
+
+	// Update consumed in-place
+	cpCon, ok := g.peerConsumed[id]
+	if !ok {
+		cpCon = make(map[string]uint64)
+		g.peerConsumed[id] = cpCon
 	}
-	g.peerBorrowed[id] = cp
+	for k, v := range consumed {
+		if v == 0 {
+			delete(cpCon, k)
+		} else {
+			cpCon[k] = v
+		}
+	}
+
+	// Update borrowed in-place
+	cpBor, ok := g.peerBorrowed[id]
+	if !ok {
+		cpBor = make(map[string]uint64)
+		g.peerBorrowed[id] = cpBor
+	}
+	for k, v := range borrowed {
+		if v == 0 {
+			delete(cpBor, k)
+		} else {
+			cpBor[k] = v
+		}
+	}
 }
 
 func (g *Gossiper) RemovePeer(id string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.peerCMS, id)
+	delete(g.peerConsumed, id)
 	delete(g.peerBorrowed, id)
 }
 
@@ -45,13 +67,16 @@ func (g *Gossiper) TopK(k int, key string) []PeerEntry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	entries := make([]PeerEntry, 0, len(g.peerCMS))
-	for id, cms := range g.peerCMS {
-		borrowed := uint64(0)
-		if bm, ok := g.peerBorrowed[id]; ok {
-			borrowed = bm[key]
+	entries := make([]PeerEntry, 0, len(g.peerBorrowed))
+	for id, bm := range g.peerBorrowed {
+		borrowed := bm[key]
+		if borrowed == 0 {
+			continue
 		}
-		consumed := cms.Query(key)
+		var consumed uint64
+		if cm, ok := g.peerConsumed[id]; ok {
+			consumed = cm[key]
+		}
 		var surplus uint64
 		if borrowed > consumed {
 			surplus = borrowed - consumed
@@ -74,8 +99,8 @@ func (g *Gossiper) TopK(k int, key string) []PeerEntry {
 func (g *Gossiper) PeerIDs() []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	ids := make([]string, 0, len(g.peerCMS))
-	for id := range g.peerCMS {
+	ids := make([]string, 0, len(g.peerBorrowed))
+	for id := range g.peerBorrowed {
 		ids = append(ids, id)
 	}
 	return ids
