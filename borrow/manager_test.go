@@ -205,14 +205,12 @@ func TestManagerLeaseEviction(t *testing.T) {
 		t.Errorf("Borrowed(key1) = %d, want 500", got)
 	}
 
-	// Advance clock past leaseTTL (10s)
 	fc.Advance(11 * time.Second)
 
 	if got := mgr.Borrowed("key1"); got != 0 {
 		t.Errorf("after lease expiration, Borrowed(key1) = %d, want 0", got)
 	}
 
-	// Verify AllBorrowed returns empty
 	all := mgr.AllBorrowed(0)
 	if len(all) != 0 {
 		t.Errorf("after lease expiration, AllBorrowed = %v, want empty", all)
@@ -237,12 +235,10 @@ func TestManagerTopN(t *testing.T) {
 		LeaseTTL: 10 * time.Second,
 	})
 
-	// Acquire different amounts for different keys
 	mgr.Acquire(context.Background(), "key-low", 100)
 	mgr.Acquire(context.Background(), "key-high", 300)
 	mgr.Acquire(context.Background(), "key-mid", 200)
 
-	// Fetch Top 2
 	top := mgr.AllBorrowed(2)
 	if len(top) != 2 {
 		t.Fatalf("AllBorrowed(2) returned %d keys, want 2", len(top))

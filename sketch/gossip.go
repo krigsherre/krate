@@ -27,7 +27,6 @@ func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed ma
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Update consumed in-place
 	cpCon, ok := g.peerConsumed[id]
 	if !ok {
 		cpCon = make(map[string]uint64)
@@ -41,7 +40,6 @@ func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed ma
 		}
 	}
 
-	// Update borrowed in-place
 	cpBor, ok := g.peerBorrowed[id]
 	if !ok {
 		cpBor = make(map[string]uint64)

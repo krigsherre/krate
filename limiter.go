@@ -240,7 +240,6 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 		}
 		lastSentCon := l.lastSentConsumed[peerID]
 
-		// Build delta borrowed
 		deltaBorrowed := make(map[string]uint64)
 		for k, v := range currentBorrowed {
 			if lastSentBor[k] != v {
@@ -253,7 +252,6 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 			}
 		}
 
-		// Build delta consumed
 		deltaConsumed := make(map[string]uint64)
 		for k, v := range currentConsumed {
 			if lastSentCon[k] != v {
@@ -288,7 +286,6 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 				return
 			}
 
-			// Update sent states on success
 			l.gossipMu.Lock()
 			defer l.gossipMu.Unlock()
 
