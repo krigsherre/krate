@@ -27,6 +27,19 @@ type bucketShard struct {
 	_pad    [24]byte
 }
 
+type peerState struct {
+	mu       sync.Mutex
+	borrowed map[string]uint64
+	consumed map[string]uint64
+}
+
+func newPeerState() *peerState {
+	return &peerState{
+		borrowed: make(map[string]uint64),
+		consumed: make(map[string]uint64),
+	}
+}
+
 type limiter struct {
 	opts             options
 	logger           *slog.Logger
@@ -42,9 +55,8 @@ type limiter struct {
 	heartbeat        *cluster.Heartbeat
 	membership       *cluster.Membership
 	router           routing.Router
-	lastSentGossip   map[string]map[string]uint64
-	lastSentConsumed map[string]map[string]uint64
-	gossipMu         sync.Mutex
+	peerStates       sync.Map
+
 	closed           atomic.Bool
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
@@ -97,13 +109,11 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 		server:           server,
 		membership:       membership,
 		router:           opts.router,
-		lastSentGossip:   make(map[string]map[string]uint64),
-		lastSentConsumed: make(map[string]map[string]uint64),
 		cancel:           cancel,
 	}
 
 	if l.router != nil {
-		l.router.Init(l.gossiper)
+		l.router.Init(l.gossiper, logger)
 	}
 
 	for i := range l.shards {
@@ -175,6 +185,13 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 		probeMode = peer.ProbeParallel
 	}
 	acq := peer.NewAcquirer(mesh, gossiper, pc, opts.instanceID, opts.probeK, probeMode, logger)
+	acq.SetExtraTokensCallback(func(key string, tokens uint64) {
+		b := l.getOrCreateBucket(key)
+		b.refill(tokens)
+		if l.metrics != nil {
+			l.metrics.RecordTokenReceived(tokens)
+		}
+	})
 	if l.metrics != nil {
 		acq.SetProbeResultCallback(func(key, peerID, result string) {
 			l.metrics.RecordPeerProbe(key, result)
@@ -234,24 +251,17 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 		client := p.Client
 		addr := p.GRPCAddr
 
-		l.gossipMu.Lock()
-		if _, ok := l.lastSentGossip[peerID]; !ok {
-			l.lastSentGossip[peerID] = make(map[string]uint64)
-		}
-		lastSentBor := l.lastSentGossip[peerID]
+		psVal, _ := l.peerStates.LoadOrStore(peerID, newPeerState())
+		ps := psVal.(*peerState)
 
-		if _, ok := l.lastSentConsumed[peerID]; !ok {
-			l.lastSentConsumed[peerID] = make(map[string]uint64)
-		}
-		lastSentCon := l.lastSentConsumed[peerID]
-
+		ps.mu.Lock()
 		deltaBorrowed := make(map[string]uint64)
 		for k, v := range currentBorrowed {
-			if lastSentBor[k] != v {
+			if ps.borrowed[k] != v {
 				deltaBorrowed[k] = v
 			}
 		}
-		for k := range lastSentBor {
+		for k := range ps.borrowed {
 			if _, exists := currentBorrowed[k]; !exists {
 				deltaBorrowed[k] = 0
 			}
@@ -259,16 +269,16 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 
 		deltaConsumed := make(map[string]uint64)
 		for k, v := range currentConsumed {
-			if lastSentCon[k] != v {
+			if ps.consumed[k] != v {
 				deltaConsumed[k] = v
 			}
 		}
-		for k := range lastSentCon {
+		for k := range ps.consumed {
 			if _, exists := currentConsumed[k]; !exists {
 				deltaConsumed[k] = 0
 			}
 		}
-		l.gossipMu.Unlock()
+		ps.mu.Unlock()
 
 		if len(deltaBorrowed) == 0 && len(currentBorrowed) == 0 &&
 			len(deltaConsumed) == 0 && len(currentConsumed) == 0 {
@@ -291,24 +301,28 @@ func (l *limiter) gossipOnce(ctx context.Context) {
 				return
 			}
 
-			l.gossipMu.Lock()
-			defer l.gossipMu.Unlock()
+			psVal, ok := l.peerStates.Load(pid)
+			if !ok {
+				return
+			}
+			ps := psVal.(*peerState)
 
-			lsBor := l.lastSentGossip[pid]
+			ps.mu.Lock()
+			defer ps.mu.Unlock()
+
 			for k, v := range db {
 				if v == 0 {
-					delete(lsBor, k)
+					delete(ps.borrowed, k)
 				} else {
-					lsBor[k] = v
+					ps.borrowed[k] = v
 				}
 			}
 
-			lsCon := l.lastSentConsumed[pid]
 			for k, v := range dc {
 				if v == 0 {
-					delete(lsCon, k)
+					delete(ps.consumed, k)
 				} else {
-					lsCon[k] = v
+					ps.consumed[k] = v
 				}
 			}
 		}(peerID, deltaBorrowed, deltaConsumed)
@@ -381,15 +395,16 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 
 		if decision == routing.DecisionRedis {
 			redisStart := l.clock.Now()
-			granted, err := l.borrowMgr.Acquire(ctx, key, n)
+			granted, err := l.borrowMgr.Acquire(ctx, key, n, func(g uint64) {
+				b.ClearRedisExhausted()
+				b.refill(g)
+			})
 			l.metrics.ObserveRequestDuration("redis", l.clock.Since(redisStart))
 
 			if err != nil {
 				return false, err
 			}
 			if granted > 0 {
-				b.ClearRedisExhausted()
-				b.refill(granted)
 				l.metrics.RecordRedisBorrow(key, true)
 				l.metrics.SetBorrowedTokens(key, l.borrowMgr.Borrowed(key))
 				if b.tryConsume(n) {
@@ -409,12 +424,13 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 		} else if decision == routing.DecisionPeer {
 			peerChecked = true
 			peerStart := l.clock.Now()
-			peerTokens, err := l.acquireFromPeers(ctx, key, n)
+			peerTokens, err := l.acquireFromPeers(ctx, key, n, func(g uint64) {
+				b.refill(g)
+				l.metrics.RecordTokenReceived(g)
+			})
 			l.metrics.ObserveRequestDuration("peer", l.clock.Since(peerStart))
 
 			if err == nil && peerTokens > 0 {
-				b.refill(peerTokens)
-				l.metrics.RecordTokenReceived(peerTokens)
 				if b.tryConsume(n) {
 					rem := b.remaining()
 					b.recordConsumption(n)
@@ -447,14 +463,15 @@ func (l *limiter) maybePreBorrow(ctx context.Context, key string, b *bucket) {
 		defer l.wg.Done()
 		defer b.ClearPreBorrowing()
 		bgCtx := context.Background()
-		granted, err := l.borrowMgr.Acquire(bgCtx, key, 0)
+		granted, err := l.borrowMgr.Acquire(bgCtx, key, 0, func(g uint64) {
+			b.ClearRedisExhausted()
+			b.refill(g)
+		})
 		if err != nil {
 			l.logger.Debug("async pre-borrow failed", "key", key, "error", err)
 			return
 		}
 		if granted > 0 {
-			b.ClearRedisExhausted()
-			b.refill(granted)
 			l.metrics.RecordRedisBorrow(key, true)
 			l.logger.Debug("async pre-borrow succeeded", "key", key, "granted", granted)
 		}
@@ -495,30 +512,33 @@ func (l *limiter) getOrCreateBucket(key string) *bucket {
 }
 
 func (l *limiter) resetWindow(ctx context.Context, key string, nowMs int64) error {
+	b := l.getOrCreateBucket(key)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	windowMs := l.opts.window.Milliseconds()
 	newWindowStart := (nowMs / windowMs) * windowMs
+
+	if b.window.WindowStartMs() >= newWindowStart {
+		return nil
+	}
 
 	if err := l.pool.ResetWindow(ctx, key, l.opts.limit, newWindowStart); err != nil {
 		return fmt.Errorf("reset window: %w", err)
 	}
 
-	b := l.getOrCreateBucket(key)
-	if drained := b.drain(); drained > 0 {
-		if err := l.borrowMgr.Return(ctx, key, drained); err != nil {
-			l.logger.Warn("return tokens after reset failed", "key", key, "error", err)
-		}
-	}
-
+	b.drain()
 	b.ClearRedisExhausted()
 	b.resetConsumed()
 
 	b.window.UpdateWindowStart(newWindowStart)
 	l.metrics.RecordWindowReset(key)
+	l.borrowMgr.Reset(key)
 	return nil
 }
 
-func (l *limiter) acquireFromPeers(ctx context.Context, key string, need uint64) (uint64, error) {
-	peerTokens, err := l.acquirer.Acquire(ctx, key, need)
+func (l *limiter) acquireFromPeers(ctx context.Context, key string, need uint64, onAcquire func(uint64)) (uint64, error) {
+	peerTokens, err := l.acquirer.Acquire(ctx, key, need, onAcquire)
 	if err != nil {
 		l.logger.Warn("peer acquisition error", "key", key, "error", err)
 		return 0, err
@@ -539,9 +559,7 @@ func (l *limiter) Close() error {
 
 	ctx := context.Background()
 
-	if err := l.borrowMgr.ReturnAll(ctx); err != nil {
-		l.logger.Warn("return tokens failed", "error", err)
-	}
+
 
 	if l.heartbeat != nil {
 		l.heartbeat.Stop()

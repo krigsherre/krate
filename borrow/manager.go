@@ -14,7 +14,6 @@ import (
 
 type PoolClient interface {
 	Borrow(ctx context.Context, key, instanceID string, requested uint64, leaseTTLms int64) (uint64, error)
-	Return(ctx context.Context, key, instanceID string, tokens uint64) error
 }
 
 type BorrowManagerOpts struct {
@@ -23,12 +22,18 @@ type BorrowManagerOpts struct {
 	Clock    clock.Clock
 	Logger   *slog.Logger
 	OnBorrow func(key string, granted uint64)
-	OnReturn func(key string, tokens uint64)
 }
 
 type keyState struct {
 	borrowed   uint64
 	lastBorrow time.Time
+}
+
+const managerShardCount = 64
+
+type managerShard struct {
+	mu         sync.Mutex
+	activeKeys map[string]*keyState
 }
 
 type BorrowManager struct {
@@ -38,14 +43,12 @@ type BorrowManager struct {
 	leaseTTL   time.Duration
 	leaseTTLms int64
 
-	mu         sync.Mutex
-	activeKeys map[string]*keyState
-	sf         singleflight.Group
+	shards   [managerShardCount]managerShard
+	sfShards [managerShardCount]singleflight.Group
 
 	logger   *slog.Logger
 	clock    clock.Clock
 	onBorrow func(key string, granted uint64)
-	onReturn func(key string, tokens uint64)
 }
 
 func NewBorrowManager(pool PoolClient, instanceID string, opts BorrowManagerOpts) *BorrowManager {
@@ -55,11 +58,12 @@ func NewBorrowManager(pool PoolClient, instanceID string, opts BorrowManagerOpts
 		instanceID: instanceID,
 		leaseTTL:   opts.LeaseTTL,
 		leaseTTLms: opts.LeaseTTL.Milliseconds(),
-		activeKeys: make(map[string]*keyState),
 		logger:     opts.Logger,
 		clock:      opts.Clock,
 		onBorrow:   opts.OnBorrow,
-		onReturn:   opts.OnReturn,
+	}
+	for i := 0; i < managerShardCount; i++ {
+		m.shards[i].activeKeys = make(map[string]*keyState)
 	}
 	if m.logger == nil {
 		m.logger = slog.Default()
@@ -70,8 +74,18 @@ func NewBorrowManager(pool PoolClient, instanceID string, opts BorrowManagerOpts
 	return m
 }
 
-func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64) (uint64, error) {
-	v, err, _ := m.sf.Do(key, func() (interface{}, error) {
+func (m *BorrowManager) shardIndex(key string) int {
+	h := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h) & (managerShardCount - 1)
+}
+
+func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64, onBorrow func(uint64)) (uint64, error) {
+	shardIdx := m.shardIndex(key)
+	v, err, _ := m.sfShards[shardIdx].Do(key, func() (interface{}, error) {
 		borrowSize := m.sizer.ComputeBorrowSize()
 		if need > borrowSize {
 			borrowSize = need
@@ -80,6 +94,24 @@ func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64) (u
 		granted, err := m.pool.Borrow(ctx, key, m.instanceID, borrowSize, m.leaseTTLms)
 		if err != nil {
 			return uint64(0), err
+		}
+		if granted > 0 {
+			if onBorrow != nil {
+				onBorrow(granted)
+			}
+
+			shard := &m.shards[shardIdx]
+			shard.mu.Lock()
+			ks, ok := shard.activeKeys[key]
+			if !ok {
+				ks = &keyState{}
+				shard.activeKeys[key] = ks
+			} else if ks.borrowed > 0 && m.clock.Now().Sub(ks.lastBorrow) > m.leaseTTL {
+				ks.borrowed = 0
+			}
+			ks.borrowed += granted
+			ks.lastBorrow = m.clock.Now()
+			shard.mu.Unlock()
 		}
 		return granted, nil
 	})
@@ -93,18 +125,6 @@ func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64) (u
 		return 0, nil
 	}
 
-	m.mu.Lock()
-	ks, ok := m.activeKeys[key]
-	if !ok {
-		ks = &keyState{}
-		m.activeKeys[key] = ks
-	} else if ks.borrowed > 0 && m.clock.Now().Sub(ks.lastBorrow) > m.leaseTTL {
-		ks.borrowed = 0
-	}
-	ks.borrowed += granted
-	ks.lastBorrow = m.clock.Now()
-	m.mu.Unlock()
-
 	m.sizer.Record(granted)
 
 	if m.onBorrow != nil {
@@ -114,59 +134,18 @@ func (m *BorrowManager) Acquire(ctx context.Context, key string, need uint64) (u
 	return granted, nil
 }
 
-func (m *BorrowManager) Return(ctx context.Context, key string, tokens uint64) error {
-	err := m.pool.Return(ctx, key, m.instanceID, tokens)
-	if err != nil {
-		return err
-	}
-
-	m.mu.Lock()
-	if ks, ok := m.activeKeys[key]; ok {
-		if tokens > ks.borrowed {
-			ks.borrowed = 0
-		} else {
-			ks.borrowed -= tokens
-		}
-	}
-	m.mu.Unlock()
-
-	if m.onReturn != nil {
-		m.onReturn(key, tokens)
-	}
-
-	return nil
-}
-
-func (m *BorrowManager) ReturnAll(ctx context.Context) error {
-	m.mu.Lock()
-	keys := make(map[string]uint64, len(m.activeKeys))
-	for k, ks := range m.activeKeys {
-		keys[k] = ks.borrowed
-	}
-	m.mu.Unlock()
-
-	var firstErr error
-	for key, tokens := range keys {
-		if tokens == 0 {
-			continue
-		}
-		if err := m.Return(ctx, key, tokens); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
 func (m *BorrowManager) RecordConsumption(key string, consumed uint64) {
 	m.sizer.Record(consumed)
 }
 
 func (m *BorrowManager) Borrowed(key string) uint64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if ks, ok := m.activeKeys[key]; ok {
+	shardIdx := m.shardIndex(key)
+	shard := &m.shards[shardIdx]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if ks, ok := shard.activeKeys[key]; ok {
 		if ks.borrowed > 0 && m.clock.Now().Sub(ks.lastBorrow) > m.leaseTTL {
-			delete(m.activeKeys, key)
+			delete(shard.activeKeys, key)
 			return 0
 		}
 		return ks.borrowed
@@ -174,26 +153,24 @@ func (m *BorrowManager) Borrowed(key string) uint64 {
 	return 0
 }
 
-type keyVal struct {
-	key string
-	val uint64
-}
-
 func (m *BorrowManager) AllBorrowed(maxKeys int) map[string]uint64 {
-	m.mu.Lock()
 	now := m.clock.Now()
 	var active []keyVal
 
-	for k, ks := range m.activeKeys {
-		if ks.borrowed > 0 && now.Sub(ks.lastBorrow) > m.leaseTTL {
-			delete(m.activeKeys, k)
-			continue
+	for i := 0; i < managerShardCount; i++ {
+		shard := &m.shards[i]
+		shard.mu.Lock()
+		for k, ks := range shard.activeKeys {
+			if ks.borrowed > 0 && now.Sub(ks.lastBorrow) > m.leaseTTL {
+				delete(shard.activeKeys, k)
+				continue
+			}
+			if ks.borrowed > 0 {
+				active = append(active, keyVal{key: k, val: ks.borrowed})
+			}
 		}
-		if ks.borrowed > 0 {
-			active = append(active, keyVal{key: k, val: ks.borrowed})
-		}
+		shard.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	if maxKeys > 0 && len(active) > maxKeys {
 		sort.Slice(active, func(i, j int) bool {
@@ -207,4 +184,19 @@ func (m *BorrowManager) AllBorrowed(maxKeys int) map[string]uint64 {
 		out[kv.key] = kv.val
 	}
 	return out
+}
+
+func (m *BorrowManager) Reset(key string) {
+	shardIdx := m.shardIndex(key)
+	shard := &m.shards[shardIdx]
+	shard.mu.Lock()
+	if ks, ok := shard.activeKeys[key]; ok {
+		ks.borrowed = 0
+	}
+	shard.mu.Unlock()
+}
+
+type keyVal struct {
+	key string
+	val uint64
 }

@@ -45,26 +45,19 @@ redis.call('PEXPIRE', borrowed_key, lease_ttl)
 return granted
 `
 
-const returnLua = `
-local pool_key = KEYS[1]
-local borrowed_key = KEYS[2]
-local tokens = tonumber(ARGV[1])
-
-local borrowed = tonumber(redis.call('GET', borrowed_key) or '0')
-local returning = math.min(tokens, borrowed)
-
-if returning > 0 then
-    redis.call('INCRBY', pool_key, returning)
-    redis.call('DECRBY', borrowed_key, returning)
-end
-
-return returning
-`
-
 const windowResetLua = `
-redis.call('SET', KEYS[1], tonumber(ARGV[1]))
-redis.call('SET', KEYS[2], tonumber(ARGV[2]))
-return 1
+local pool_key = KEYS[1]
+local window_start_key = KEYS[2]
+local limit = tonumber(ARGV[1])
+local new_start = tonumber(ARGV[2])
+
+local current_start = tonumber(redis.call('GET', window_start_key) or '0')
+if new_start > current_start then
+    redis.call('SET', pool_key, limit)
+    redis.call('SET', window_start_key, new_start)
+    return 1
+end
+return 0
 `
 
 type RedisPool struct {
@@ -77,7 +70,6 @@ func NewRedisPool(client redis.UniversalClient) *RedisPool {
 		client: client,
 		scripts: map[string]*redis.Script{
 			"borrow": redis.NewScript(borrowLua),
-			"return": redis.NewScript(returnLua),
 			"reset":  redis.NewScript(windowResetLua),
 		},
 	}
@@ -107,15 +99,6 @@ func (rp *RedisPool) Borrow(ctx context.Context, key, instanceID string, request
 	}
 
 	return toUint64(result)
-}
-
-func (rp *RedisPool) Return(ctx context.Context, key, instanceID string, tokens uint64) error {
-	keys := []string{PoolKey(key), BorrowedKey(key, instanceID)}
-	_, err := rp.runScript(ctx, "return", keys, int64(tokens))
-	if err != nil {
-		return fmt.Errorf("return script: %w", err)
-	}
-	return nil
 }
 
 func (rp *RedisPool) ResetWindow(ctx context.Context, key string, newLimit uint64, windowStartMs int64) error {
