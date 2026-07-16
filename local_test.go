@@ -91,8 +91,6 @@ func TestLocalBucketDrainEmpty(t *testing.T) {
 	}
 }
 
-
-
 func TestLocalBucketNoUnderflow(t *testing.T) {
 	b := NewLocalBucket("test", 10)
 

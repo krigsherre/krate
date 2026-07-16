@@ -8,8 +8,8 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/status"
 
 	kratev1 "github.com/krigsherre/krate/peer/peerpb"
 )

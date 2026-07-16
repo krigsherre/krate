@@ -101,6 +101,11 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 		lastSentConsumed: make(map[string]map[string]uint64),
 		cancel:           cancel,
 	}
+
+	if l.router != nil {
+		l.router.Init(l.gossiper)
+	}
+
 	for i := range l.shards {
 		l.shards[i].buckets = make(map[string]*bucket)
 	}
