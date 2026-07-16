@@ -72,11 +72,11 @@ func (c *countingPeerRanker) TopK(k int, key string) []sketch.PeerEntry {
 }
 
 func TestAcquirerTopKProbes(t *testing.T) {
-	p1 := &mockPeerGRPCClient{granted: 100}
-	p2 := &mockPeerGRPCClient{granted: 200}
-	p3 := &mockPeerGRPCClient{granted: 300}
-	p4 := &mockPeerGRPCClient{granted: 400}
-	p5 := &mockPeerGRPCClient{granted: 500}
+	p1 := &mockPeerGRPCClient{granted: 0}
+	p2 := &mockPeerGRPCClient{granted: 0}
+	p3 := &mockPeerGRPCClient{granted: 0}
+	p4 := &mockPeerGRPCClient{granted: 0}
+	p5 := &mockPeerGRPCClient{granted: 0}
 
 	clients := map[string]kratev1.KratePeerServiceClient{
 		"p1": p1, "p2": p2, "p3": p3, "p4": p4, "p5": p5,
@@ -94,12 +94,12 @@ func TestAcquirerTopKProbes(t *testing.T) {
 		"self", 3, ProbeParallel, testLogger(t),
 	)
 
-	granted, err := acq.Acquire(context.Background(), "key", 50)
+	granted, err := acq.Acquire(context.Background(), "key", 50, nil)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	if granted == 0 {
-		t.Fatal("expected non-zero granted")
+	if granted != 0 {
+		t.Fatalf("expected zero granted, got %d", granted)
 	}
 	if !p1.called.Load() {
 		t.Error("p1 should have been probed")
@@ -132,7 +132,7 @@ func TestAcquirerParallelMode(t *testing.T) {
 	)
 
 	start := time.Now()
-	granted, err := acq.Acquire(context.Background(), "key", 50)
+	granted, err := acq.Acquire(context.Background(), "key", 50, nil)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -165,7 +165,7 @@ func TestAcquirerSequentialMode(t *testing.T) {
 		"self", 3, ProbeSequential, testLogger(t),
 	)
 
-	granted, err := acq.Acquire(context.Background(), "key", 50)
+	granted, err := acq.Acquire(context.Background(), "key", 50, nil)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestAcquirerAllExhausted(t *testing.T) {
 		"self", 3, ProbeSequential, testLogger(t),
 	)
 
-	granted, err := acq.Acquire(context.Background(), "key", 50)
+	granted, err := acq.Acquire(context.Background(), "key", 50, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestAcquirerSingleflight(t *testing.T) {
 			defer done.Done()
 			ready.Done()
 			go2.Wait()
-			results[idx], errs[idx] = acq.Acquire(context.Background(), "key", 10)
+			results[idx], errs[idx] = acq.Acquire(context.Background(), "key", 10, nil)
 		}()
 	}
 

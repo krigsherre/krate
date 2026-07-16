@@ -3,7 +3,6 @@ package peer
 import (
 	"context"
 	"log/slog"
-	"sync"
 
 	"golang.org/x/sync/singleflight"
 
@@ -28,6 +27,8 @@ type tokenRequester interface {
 	RequestTokens(ctx context.Context, client kratev1.KratePeerServiceClient, originID, limitKey string, need uint64) (uint64, error)
 }
 
+const acquirerSfShardCount = 64
+
 type Acquirer struct {
 	mesh     peerLookup
 	gossiper peerRanker
@@ -37,8 +38,9 @@ type Acquirer struct {
 	mode     int
 	logger   *slog.Logger
 
-	sf            singleflight.Group
+	sfShards      [acquirerSfShardCount]singleflight.Group
 	onProbeResult func(key, peerID, result string)
+	onExtraTokens func(key string, tokens uint64)
 }
 
 func NewAcquirer(mesh peerLookup, gossiper peerRanker, client tokenRequester, originID string, probeK int, mode int, logger *slog.Logger) *Acquirer {
@@ -60,9 +62,27 @@ func (a *Acquirer) SetProbeResultCallback(fn func(key, peerID, result string)) {
 	a.onProbeResult = fn
 }
 
-func (a *Acquirer) Acquire(ctx context.Context, key string, need uint64) (uint64, error) {
-	v, err, _ := a.sf.Do(key, func() (interface{}, error) {
-		return a.acquire(ctx, key, need)
+func (a *Acquirer) SetExtraTokensCallback(fn func(key string, tokens uint64)) {
+	a.onExtraTokens = fn
+}
+
+func (a *Acquirer) shardIndex(key string) int {
+	h := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h) & (acquirerSfShardCount - 1)
+}
+
+func (a *Acquirer) Acquire(ctx context.Context, key string, need uint64, onAcquire func(uint64)) (uint64, error) {
+	shardIdx := a.shardIndex(key)
+	v, err, _ := a.sfShards[shardIdx].Do(key, func() (interface{}, error) {
+		granted, err := a.acquire(ctx, key, need)
+		if err == nil && granted > 0 && onAcquire != nil {
+			onAcquire(granted)
+		}
+		return granted, err
 	})
 	if err != nil {
 		return 0, err
@@ -88,40 +108,61 @@ func (a *Acquirer) probeParallel(ctx context.Context, candidates []sketch.PeerEn
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var (
-		mu      sync.Mutex
-		granted uint64
-		found   bool
-		wg      sync.WaitGroup
-	)
+	type probeRes struct {
+		got uint64
+		err error
+	}
+	resChan := make(chan probeRes, len(candidates))
 
 	for _, c := range candidates {
 		c := c
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			got, err := a.probe(ctx, c.ID, key, need, c.Surplus)
-			if err != nil {
-				return
-			}
-			if got > 0 {
-				mu.Lock()
-				if !found {
-					granted = got
-					found = true
-					cancel()
-				}
-				mu.Unlock()
-			}
+			resChan <- probeRes{got: got, err: err}
 		}()
 	}
 
-	wg.Wait()
+	var (
+		granted uint64
+		active  = len(candidates)
+	)
 
-	if !found {
-		return 0, nil
+	for active > 0 {
+		select {
+		case res := <-resChan:
+			active--
+			if res.err == nil && res.got > 0 {
+				granted = res.got
+				cancel()
+				go func(rem int) {
+					for i := 0; i < rem; i++ {
+						r := <-resChan
+						if r.err == nil && r.got > 0 {
+							if a.onExtraTokens != nil {
+								a.onExtraTokens(key, r.got)
+							}
+						}
+					}
+				}(active)
+
+				return granted, nil
+			}
+		case <-ctx.Done():
+			go func(rem int) {
+				for i := 0; i < rem; i++ {
+					r := <-resChan
+					if r.err == nil && r.got > 0 {
+						if a.onExtraTokens != nil {
+							a.onExtraTokens(key, r.got)
+						}
+					}
+				}
+			}(active)
+			return 0, ctx.Err()
+		}
 	}
-	return granted, nil
+
+	return 0, nil
 }
 
 func (a *Acquirer) probeSequential(ctx context.Context, candidates []sketch.PeerEntry, key string, need uint64) (uint64, error) {
