@@ -19,7 +19,7 @@ func TestDefaultRouter(t *testing.T) {
 				Key:            "test-key",
 				Need:           1,
 				RedisExhausted: false,
-				HasPeers:       true,
+				HasPeers:       false,
 			},
 			expected: DecisionRedis,
 		},
@@ -41,7 +41,7 @@ func TestDefaultRouter(t *testing.T) {
 				RedisExhausted: true,
 				HasPeers:       false,
 			},
-			expected: DecisionNone,
+			expected: DecisionDeny,
 		},
 	}
 

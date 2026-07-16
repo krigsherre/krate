@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/krigsherre/krate/sketch"
 )
@@ -23,7 +24,7 @@ type RouteContext struct {
 
 type Router interface {
 	Decide(ctx context.Context, rc *RouteContext) (Decision, error)
-	Init(gossiper *sketch.Gossiper)
+	Init(gossiper *sketch.Gossiper, logger *slog.Logger)
 }
 
 type DefaultRouter struct{}
@@ -32,7 +33,7 @@ func NewDefaultRouter() *DefaultRouter {
 	return &DefaultRouter{}
 }
 
-func (r *DefaultRouter) Init(gossiper *sketch.Gossiper) {}
+func (r *DefaultRouter) Init(gossiper *sketch.Gossiper, logger *slog.Logger) {}
 
 func (r *DefaultRouter) Decide(ctx context.Context, rc *RouteContext) (Decision, error) {
 	if rc.HasPeers {
