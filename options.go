@@ -47,8 +47,8 @@ type options struct {
 	metrics prometheus.Registerer
 	clock   Clock
 
-	router        routing.Router
-	maxGossipKeys int
+	router          routing.Router
+	maxGossipKeys   int
 	gzipCompression bool
 }
 

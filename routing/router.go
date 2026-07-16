@@ -1,25 +1,18 @@
 package routing
 
-import "context"
+import (
+	"context"
+
+	"github.com/krigsherre/krate/sketch"
+)
 
 type Decision int
 
 const (
 	DecisionRedis Decision = iota
 	DecisionPeer
-	DecisionNone
+	DecisionDeny
 )
-
-func (d Decision) String() string {
-	switch d {
-	case DecisionRedis:
-		return "Redis"
-	case DecisionPeer:
-		return "Peer"
-	default:
-		return "None"
-	}
-}
 
 type RouteContext struct {
 	Key            string
@@ -30,6 +23,7 @@ type RouteContext struct {
 
 type Router interface {
 	Decide(ctx context.Context, rc *RouteContext) (Decision, error)
+	Init(gossiper *sketch.Gossiper)
 }
 
 type DefaultRouter struct{}
@@ -38,12 +32,14 @@ func NewDefaultRouter() *DefaultRouter {
 	return &DefaultRouter{}
 }
 
+func (r *DefaultRouter) Init(gossiper *sketch.Gossiper) {}
+
 func (r *DefaultRouter) Decide(ctx context.Context, rc *RouteContext) (Decision, error) {
-	if !rc.RedisExhausted {
-		return DecisionRedis, nil
-	}
 	if rc.HasPeers {
 		return DecisionPeer, nil
 	}
-	return DecisionNone, nil
+	if rc.RedisExhausted {
+		return DecisionDeny, nil
+	}
+	return DecisionRedis, nil
 }
