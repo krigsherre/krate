@@ -41,9 +41,11 @@ bench:
 bench-race:
 	go test -bench=. -benchmem -race -count=1 -timeout 60s ./...
 
+SCENARIO   ?= all
+
 bench-run: build-bench
 	@echo "Requires Redis at $(REDIS_ADDR)"
-	REDIS_ADDR=$(REDIS_ADDR) ./bin/krate-bench -scenario=all -duration=5s
+	REDIS_ADDR=$(REDIS_ADDR) ./bin/krate-bench -scenario=$(SCENARIO) -duration=5s
 
 proto-gen:
 	@echo "Generating proto..."
