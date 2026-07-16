@@ -121,57 +121,7 @@ func TestBorrowPartial(t *testing.T) {
 	}
 }
 
-func TestReturnTokens(t *testing.T) {
-	client := setupRedis(t)
-	rp := NewRedisPool(client)
-	ctx := context.Background()
-	key := uniqueKey(t)
-	t.Cleanup(func() { cleanupKeys(t, client, "krate:"+key+":*") })
 
-	client.Set(ctx, PoolKey(key), 1000, 0)
-	rp.Borrow(ctx, key, "inst-1", 100, 30000)
-
-	err := rp.Return(ctx, key, "inst-1", 50)
-	if err != nil {
-		t.Fatalf("Return: %v", err)
-	}
-
-	pool, _ := client.Get(ctx, PoolKey(key)).Int64()
-	if pool != 950 {
-		t.Errorf("pool = %d, want 950", pool)
-	}
-
-	borrowed, _ := client.Get(ctx, BorrowedKey(key, "inst-1")).Int64()
-	if borrowed != 50 {
-		t.Errorf("borrowed = %d, want 50", borrowed)
-	}
-}
-
-func TestReturnMoreThanBorrowed(t *testing.T) {
-	client := setupRedis(t)
-	rp := NewRedisPool(client)
-	ctx := context.Background()
-	key := uniqueKey(t)
-	t.Cleanup(func() { cleanupKeys(t, client, "krate:"+key+":*") })
-
-	client.Set(ctx, PoolKey(key), 1000, 0)
-	rp.Borrow(ctx, key, "inst-1", 100, 30000)
-
-	err := rp.Return(ctx, key, "inst-1", 200)
-	if err != nil {
-		t.Fatalf("Return: %v", err)
-	}
-
-	pool, _ := client.Get(ctx, PoolKey(key)).Int64()
-	if pool != 1000 {
-		t.Errorf("pool = %d, want 1000 (no overshoot)", pool)
-	}
-
-	borrowed, _ := client.Get(ctx, BorrowedKey(key, "inst-1")).Int64()
-	if borrowed != 0 {
-		t.Errorf("borrowed = %d, want 0", borrowed)
-	}
-}
 
 func TestWindowReset(t *testing.T) {
 	client := setupRedis(t)

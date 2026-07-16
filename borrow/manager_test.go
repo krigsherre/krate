@@ -13,9 +13,7 @@ import (
 type mockPool struct {
 	mu       sync.Mutex
 	borrowFn func(ctx context.Context, key, instanceID string, requested uint64, leaseTTLms int64) (uint64, error)
-	returnFn func(ctx context.Context, key, instanceID string, tokens uint64) error
 	borrowN  int32
-	returnN  int32
 }
 
 func (m *mockPool) Borrow(ctx context.Context, key, instanceID string, requested uint64, leaseTTLms int64) (uint64, error) {
@@ -24,14 +22,6 @@ func (m *mockPool) Borrow(ctx context.Context, key, instanceID string, requested
 		return m.borrowFn(ctx, key, instanceID, requested, leaseTTLms)
 	}
 	return 0, nil
-}
-
-func (m *mockPool) Return(ctx context.Context, key, instanceID string, tokens uint64) error {
-	atomic.AddInt32(&m.returnN, 1)
-	if m.returnFn != nil {
-		return m.returnFn(ctx, key, instanceID, tokens)
-	}
-	return nil
 }
 
 func TestManagerAcquireSuccess(t *testing.T) {
@@ -47,7 +37,7 @@ func TestManagerAcquireSuccess(t *testing.T) {
 		LeaseTTL: 30 * time.Second,
 	})
 
-	granted, err := mgr.Acquire(context.Background(), "key1", 100)
+	granted, err := mgr.Acquire(context.Background(), "key1", 100, nil)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -72,7 +62,7 @@ func TestManagerAcquireExhausted(t *testing.T) {
 		LeaseTTL: 30 * time.Second,
 	})
 
-	granted, err := mgr.Acquire(context.Background(), "key1", 100)
+	granted, err := mgr.Acquire(context.Background(), "key1", 100, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +93,7 @@ func TestManagerSingleflight(t *testing.T) {
 		go func() {
 			ready.Done()
 			go2.Wait()
-			_, _ = mgr.Acquire(context.Background(), "key1", 10)
+			_, _ = mgr.Acquire(context.Background(), "key1", 10, nil)
 		}()
 	}
 
@@ -116,50 +106,7 @@ func TestManagerSingleflight(t *testing.T) {
 	}
 }
 
-func TestManagerReturnAll(t *testing.T) {
-	var mu sync.Mutex
-	returned := make(map[string][]uint64)
 
-	mock := &mockPool{
-		borrowFn: func(_ context.Context, _, _ string, requested uint64, _ int64) (uint64, error) {
-			return requested, nil
-		},
-		returnFn: func(_ context.Context, key, _ string, tokens uint64) error {
-			mu.Lock()
-			returned[key] = append(returned[key], tokens)
-			mu.Unlock()
-			return nil
-		},
-	}
-
-	sizer := NewAdaptiveSizer(0.3, 100, 100, time.Second, false)
-	mgr := NewBorrowManager(mock, "inst-1", BorrowManagerOpts{
-		Sizer:    sizer,
-		LeaseTTL: 30 * time.Second,
-	})
-
-	for _, key := range []string{"a", "b", "c"} {
-		if _, err := mgr.Acquire(context.Background(), key, 100); err != nil {
-			t.Fatalf("Acquire(%s): %v", key, err)
-		}
-	}
-
-	if err := mgr.ReturnAll(context.Background()); err != nil {
-		t.Fatalf("ReturnAll: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	for _, key := range []string{"a", "b", "c"} {
-		var total uint64
-		for _, v := range returned[key] {
-			total += v
-		}
-		if total != 100 {
-			t.Errorf("returned[%s] total = %d, want 100", key, total)
-		}
-	}
-}
 
 func TestManagerRecordConsumption(t *testing.T) {
 	mock := &mockPool{
@@ -196,7 +143,7 @@ func TestManagerLeaseEviction(t *testing.T) {
 		Clock:    fc,
 	})
 
-	_, err := mgr.Acquire(context.Background(), "key1", 500)
+	_, err := mgr.Acquire(context.Background(), "key1", 500, nil)
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -235,9 +182,9 @@ func TestManagerTopN(t *testing.T) {
 		LeaseTTL: 10 * time.Second,
 	})
 
-	mgr.Acquire(context.Background(), "key-low", 100)
-	mgr.Acquire(context.Background(), "key-high", 300)
-	mgr.Acquire(context.Background(), "key-mid", 200)
+	mgr.Acquire(context.Background(), "key-low", 100, nil)
+	mgr.Acquire(context.Background(), "key-high", 300, nil)
+	mgr.Acquire(context.Background(), "key-mid", 200, nil)
 
 	top := mgr.AllBorrowed(2)
 	if len(top) != 2 {

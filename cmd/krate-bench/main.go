@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/krigsherre/krate"
+	"github.com/krigsherre/krate/routing"
 )
 
 var (
@@ -125,6 +126,84 @@ var scenarios = map[string]scenarioConfig{
 		SharedHotspot: true,
 		TrafficSkew:   true,
 	},
+}
+
+type windowStats struct {
+	allowed  int64
+	rejected int64
+}
+
+const trackerShardCount = 64
+
+type trackerShard struct {
+	mu    sync.Mutex
+	stats map[string]map[int64]*windowStats
+}
+
+type accuracyTracker struct {
+	shards [trackerShardCount]trackerShard
+}
+
+func trackerShardIndex(key string) int {
+	h := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h) & (trackerShardCount - 1)
+}
+
+func (t *accuracyTracker) Record(key string, windowNum int64, allowed bool) {
+	idx := trackerShardIndex(key)
+	s := &t.shards[idx]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stats == nil {
+		s.stats = make(map[string]map[int64]*windowStats)
+	}
+	m, ok := s.stats[key]
+	if !ok {
+		m = make(map[int64]*windowStats)
+		s.stats[key] = m
+	}
+	ws, ok := m[windowNum]
+	if !ok {
+		ws = &windowStats{}
+		m[windowNum] = ws
+	}
+	if allowed {
+		ws.allowed++
+	} else {
+		ws.rejected++
+	}
+}
+
+func (t *accuracyTracker) ComputeAccuracy(limit uint64) (int64, int64) {
+	var totalLeakage int64
+	var totalFalseRejections int64
+
+	for i := range t.shards {
+		s := &t.shards[i]
+		s.mu.Lock()
+		for _, m := range s.stats {
+			for _, ws := range m {
+				if ws.allowed > int64(limit) {
+					totalLeakage += ws.allowed - int64(limit)
+				}
+				if ws.rejected > 0 && ws.allowed < int64(limit) {
+					unusedCapacity := int64(limit) - ws.allowed
+					if ws.rejected < unusedCapacity {
+						totalFalseRejections += ws.rejected
+					} else {
+						totalFalseRejections += unusedCapacity
+					}
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	return totalLeakage, totalFalseRejections
 }
 
 type latency struct {
@@ -314,20 +393,22 @@ func computeKeyDist(total int64, numKeys int, s float64) *keyDist {
 }
 
 type result struct {
-	name     string
-	total    int64
-	allowed  int64
-	rejected int64
-	rps      float64
-	elapsed  time.Duration
-	pm       pathMetrics
-	p50      float64
-	p90      float64
-	p99      float64
-	p999     float64
-	mean     float64
-	lat      *latency
-	dist     *keyDist
+	name      string
+	total     int64
+	allowed   int64
+	rejected  int64
+	rps       float64
+	elapsed   time.Duration
+	pm        pathMetrics
+	p50       float64
+	p90       float64
+	p99       float64
+	p999      float64
+	mean      float64
+	lat       *latency
+	dist      *keyDist
+	leakage   int64
+	falseRejs int64
 }
 
 func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
@@ -350,6 +431,10 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 
 	for i := 0; i < cfg.Instances; i++ {
 		reg := prometheus.NewRegistry()
+		var rtr routing.Router = routing.NewDefaultRouter()
+		if cfg.ProbeK > 0 {
+			rtr = routing.NewEMAPredictiveRouter(0.5)
+		}
 		l, err := krate.New(rdb,
 			krate.WithInstanceID(fmt.Sprintf("%s-%d", cfg.Name, i)),
 			krate.WithLimit(cfg.Limit),
@@ -363,6 +448,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 			krate.WithGossipInterval(gossipInterval),
 			krate.WithHeartbeatInterval(heartbeatInterval),
 			krate.WithMetrics(reg),
+			krate.WithRouter(rtr),
 		)
 		if err != nil {
 			logf("krate.New(%d): %v", i, err)
@@ -407,9 +493,17 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		logf("krate: skipping warmup (Zipf will naturally warm popular keys)")
 	}
 
+	windowMs := cfg.Window.Milliseconds()
+	nowMs := time.Now().UnixMilli()
+	nextBoundary := ((nowMs / windowMs) + 1) * windowMs
+	sleepDuration := time.Duration(nextBoundary-nowMs) * time.Millisecond
+	logf("krate: sleeping %v to align with next window boundary...", sleepDuration)
+	time.Sleep(sleepDuration)
+
 	logf("krate: driving %d goroutines for %v...",
 		cfg.Instances*cfg.Concurrency, *duration)
 
+	tracker := &accuracyTracker{}
 	lat := newLatency(500_000)
 	var total, allowed, rejected atomic.Int64
 
@@ -472,9 +566,14 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 					key := fmt.Sprintf("key:%d", keyIdx)
 					t0 := time.Now()
 					ok, _ := lim.Allow(context.Background(), key)
-					d := time.Since(t0)
+					tAfter := time.Now()
+					d := tAfter.Sub(t0)
 					total.Add(1)
 					lat.add(float64(d.Nanoseconds()))
+
+					windowNum := tAfter.UnixMilli() / windowMs
+					tracker.Record(key, windowNum, ok)
+
 					if ok {
 						allowed.Add(1)
 					} else {
@@ -501,6 +600,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 	p := lat.pcts(50, 90, 99, 99.9)
 	pm := gatherPath(regs)
 	dist := computeKeyDist(total.Load(), cfg.Keys, cfg.ZipfS)
+	leakage, falseRejs := tracker.ComputeAccuracy(cfg.Limit)
 
 	logf("krate: done — %s requests in %v (%s/s)",
 		fmtN(total.Load()), elapsed.Round(time.Second), fmtF(float64(total.Load())/elapsed.Seconds()))
@@ -511,6 +611,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		rps: float64(total.Load()) / elapsed.Seconds(), elapsed: elapsed,
 		pm: pm, p50: p[50], p90: p[90], p99: p[99], p999: p[99.9],
 		mean: lat.avg(), lat: lat, dist: dist,
+		leakage: leakage, falseRejs: falseRejs,
 	}
 }
 
@@ -531,7 +632,14 @@ func runRedisBaseline(rdb *redis.Client, cfg scenarioConfig) result {
 	lat := newLatency(500_000)
 	var total, allowed, rejected atomic.Int64
 	totalConc := cfg.Instances * cfg.Concurrency
+	tracker := &accuracyTracker{}
 
+	windowMs := cfg.Window.Milliseconds()
+	nowMs := time.Now().UnixMilli()
+	nextBoundary := ((nowMs / windowMs) + 1) * windowMs
+	sleepDuration := time.Duration(nextBoundary-nowMs) * time.Millisecond
+	logf("redis: sleeping %v to align with next window boundary...", sleepDuration)
+	time.Sleep(sleepDuration)
 	logf("redis: driving %d goroutines for %v...", totalConc, *duration)
 
 	runCtx, cancel := context.WithTimeout(context.Background(), *duration)
@@ -561,10 +669,16 @@ func runRedisBaseline(rdb *redis.Client, cfg scenarioConfig) result {
 				t0 := time.Now()
 				res, _ := script.Run(runCtx, rdb, []string{key},
 					int64(cfg.Limit), int64(cfg.Window.Seconds())).Int64()
-				d := time.Since(t0)
+				tAfter := time.Now()
+				d := tAfter.Sub(t0)
 				total.Add(1)
 				lat.add(float64(d.Nanoseconds()))
-				if res == 1 {
+
+				ok := res == 1
+				windowNum := tAfter.UnixMilli() / windowMs
+				tracker.Record(key, windowNum, ok)
+
+				if ok {
 					allowed.Add(1)
 				} else {
 					rejected.Add(1)
@@ -588,6 +702,7 @@ func runRedisBaseline(rdb *redis.Client, cfg scenarioConfig) result {
 
 	p := lat.pcts(50, 90, 99, 99.9)
 	dist := computeKeyDist(total.Load(), cfg.Keys, cfg.ZipfS)
+	leakage, falseRejs := tracker.ComputeAccuracy(cfg.Limit)
 
 	logf("redis: done — %s requests in %v (%s/s)",
 		fmtN(total.Load()), elapsed.Round(time.Second), fmtF(float64(total.Load())/elapsed.Seconds()))
@@ -598,6 +713,7 @@ func runRedisBaseline(rdb *redis.Client, cfg scenarioConfig) result {
 		rps: float64(total.Load()) / elapsed.Seconds(), elapsed: elapsed,
 		p50: p[50], p90: p[90], p99: p[99], p999: p[99.9],
 		mean: lat.avg(), lat: lat, dist: dist,
+		leakage: leakage, falseRejs: falseRejs,
 	}
 }
 
@@ -770,6 +886,13 @@ func printScenario(cfg scenarioConfig, kr, rd result) {
 	rejRd := pct(rd.rejected, rd.total)
 	fmt.Printf("│  Rejections: krate %s (%.1f%%) vs Redis %s (%.1f%%)\n",
 		fmtN(kr.rejected), rejKr, fmtN(rd.rejected), rejRd)
+
+	fmt.Println("│")
+	fmt.Println("│  Accuracy & Policy Enforcement")
+	fmt.Printf("│    krate  Leakage (Over-admission): %8s (%5.2f%%) │ False Rejections: %8s (%5.2f%%)\n",
+		fmtN(kr.leakage), pct(kr.leakage, kr.total), fmtN(kr.falseRejs), pct(kr.falseRejs, kr.total))
+	fmt.Printf("│    Redis  Leakage (Over-admission): %8s (%5.2f%%) │ False Rejections: %8s (%5.2f%%)\n",
+		fmtN(rd.leakage), pct(rd.leakage, rd.total), fmtN(rd.falseRejs), pct(rd.falseRejs, rd.total))
 
 	fmt.Println("│")
 	fmt.Println("│  Distribution")

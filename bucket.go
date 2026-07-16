@@ -1,11 +1,13 @@
 package krate
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type bucket struct {
+	mu       sync.Mutex
 	local    *LocalBucket
 	window   *Window
 	key      string

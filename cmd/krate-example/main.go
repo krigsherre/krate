@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
 
 	"github.com/krigsherre/krate"
 )
@@ -40,39 +41,42 @@ func main() {
 	}
 	defer limiter.Close()
 
-	rateLimit := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := r.Header.Get("X-API-Key")
-			if key == "" {
-				key = r.RemoteAddr
-			}
+	metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())
 
-			allowed, err := limiter.Allow(r.Context(), key)
-			if err != nil {
-				logger.Error("rate limit error", "error", err)
-				next.ServeHTTP(w, r)
-				return
-			}
+	requestHandler := func(ctx *fasthttp.RequestCtx) {
+		path := string(ctx.Path())
+		if path == "/metrics" {
+			metricsHandler(ctx)
+			return
+		}
+		if path != "/" {
+			ctx.Error("Not Found", fasthttp.StatusNotFound)
+			return
+		}
 
-			if !allowed {
-				w.WriteHeader(http.StatusTooManyRequests)
-				w.Write([]byte("rate limit exceeded"))
-				return
-			}
+		key := string(ctx.Request.Header.Peek("X-API-Key"))
+		if key == "" {
+			key = ctx.RemoteIP().String()
+		}
 
-			next.ServeHTTP(w, r)
-		})
+		allowed, err := limiter.Allow(context.Background(), key)
+		if err != nil {
+			logger.Error("rate limit error", "error", err)
+			ctx.Write([]byte("Hello, world!"))
+			return
+		}
+
+		if !allowed {
+			ctx.SetStatusCode(fasthttp.StatusTooManyRequests)
+			ctx.Write([]byte("rate limit exceeded"))
+			return
+		}
+
+		ctx.Write([]byte("Hello, world!"))
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Hello, world!"))
-	})
-	mux.Handle("/metrics", promhttp.Handler())
-
-	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: rateLimit(mux),
+	srv := &fasthttp.Server{
+		Handler: requestHandler,
 	}
 
 	go func() {
@@ -80,13 +84,14 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
+		logger.Info("shutting down server...")
+		if err := srv.Shutdown(); err != nil {
+			logger.Error("shutdown error", "error", err)
+		}
 	}()
 
-	logger.Info("starting server", "addr", ":8080")
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	logger.Info("starting fasthttp server", "addr", ":8080")
+	if err := srv.ListenAndServe(":8080"); err != nil {
 		logger.Error("server error", "error", err)
 	}
 }
