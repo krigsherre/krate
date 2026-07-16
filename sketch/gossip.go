@@ -18,15 +18,10 @@ type Gossiper struct {
 	peerConsumed map[string]map[string]uint64
 	peerBorrowed map[string]map[string]uint64
 	peerUpdated  map[string]map[string]time.Time
-
-	// Track the last known consumed tokens per peer per key to calculate velocity
 	lastConsumed map[string]map[string]uint64
-	// Track the calculated consumption velocity (EMA) per peer per key
-	velocityEMA map[string]map[string]float64
-	// Track the time of the last update per peer per key
-	lastUpdated map[string]map[string]time.Time
-	// Alpha parameter for EMA (0 < alpha <= 1)
-	alpha float64
+	velocityEMA  map[string]map[string]float64
+	lastUpdated  map[string]map[string]time.Time
+	alpha        float64
 }
 
 func NewGossiper() *Gossiper {
@@ -59,7 +54,6 @@ func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed ma
 		g.peerConsumed[id] = cpCon
 	}
 
-	// Initialize maps for EMA if missing
 	if _, ok := g.lastConsumed[id]; !ok {
 		g.lastConsumed[id] = make(map[string]uint64)
 		g.velocityEMA[id] = make(map[string]float64)
@@ -76,8 +70,6 @@ func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed ma
 			delete(g.lastUpdated[id], k)
 		} else {
 			cpCon[k] = v
-
-			// Update EMA models based on fresh gossip updates
 			lastTime, timeOk := g.lastUpdated[id][k]
 			lastCon, consOk := g.lastConsumed[id][k]
 			if timeOk && consOk {
@@ -87,18 +79,15 @@ func (g *Gossiper) UpdatePeer(id string, consumed map[string]uint64, borrowed ma
 					if v >= lastCon {
 						diff = float64(v - lastCon)
 					} else {
-						// Counter reset (e.g. window reset on peer)
 						diff = float64(v)
 					}
-
 					currentVelocity := diff / dt
 					prevEMA := g.velocityEMA[id][k]
-					newEMA := (g.alpha * currentVelocity) + ((1-g.alpha) * prevEMA)
+					newEMA := (g.alpha * currentVelocity) + ((1 - g.alpha) * prevEMA)
 					g.velocityEMA[id][k] = newEMA
 				}
 				g.lastUpdated[id][k] = now
 			} else {
-				// First time seeing this peer/key
 				g.lastUpdated[id][k] = now
 			}
 			g.lastConsumed[id][k] = v
@@ -165,8 +154,6 @@ func (g *Gossiper) TopK(k int, key string) []PeerEntry {
 			continue
 		}
 
-		// Calculate predicted surplus using EMA velocity decay:
-		// predictedSurplus = rawSurplus - velocity * timeSinceLastGossip
 		var lastTime time.Time
 		if um, ok := g.peerUpdated[id]; ok {
 			lastTime = um[key]

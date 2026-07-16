@@ -56,7 +56,6 @@ func main() {
 
 		key := string(ctx.Request.Header.Peek("X-API-Key"))
 		if key == "" {
-			// RemoteIP().String() returns only the IP address, not the port.
 			key = ctx.RemoteIP().String()
 		}
 
