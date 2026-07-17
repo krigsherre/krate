@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/krigsherre/krate/cluster"
+	"github.com/krigsherre/krate/internal/cluster"
 )
 
 func testLogger(t *testing.T) *slog.Logger {

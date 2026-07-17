@@ -3,7 +3,7 @@ package peer
 import (
 	"errors"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 )
 
 func ValidateTransferRequest(req *kratev1.TransferRequest) error {

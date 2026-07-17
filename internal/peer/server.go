@@ -11,7 +11,7 @@ import (
 	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 )
 
 type TokenServer struct {

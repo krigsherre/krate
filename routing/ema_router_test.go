@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/krigsherre/krate/sketch"
+	"github.com/krigsherre/krate/internal/sketch"
 )
 
 func TestEMARouterComparison(t *testing.T) {

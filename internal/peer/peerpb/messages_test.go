@@ -3,7 +3,7 @@ package kratev1_test
 import (
 	"testing"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 	"google.golang.org/protobuf/proto"
 )
 

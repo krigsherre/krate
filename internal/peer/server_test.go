@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

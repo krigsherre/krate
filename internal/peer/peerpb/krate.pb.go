@@ -15,7 +15,9 @@ import (
 )
 
 const (
+	// Verify that this generated code is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(20 - protoimpl.MinVersion)
+	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
@@ -318,9 +320,9 @@ const file_krate_proto_rawDesc = "" +
 	"\x10KratePeerService\x12G\n" +
 	"\x0eTransferTokens\x12\x19.krate.v1.TransferRequest\x1a\x1a.krate.v1.TransferResponse\x125\n" +
 	"\x04Ping\x12\x15.krate.v1.PingRequest\x1a\x16.krate.v1.PingResponse\x12;\n" +
-	"\x06Gossip\x12\x17.krate.v1.GossipRequest\x1a\x18.krate.v1.GossipResponseB\x85\x01\n" +
+	"\x06Gossip\x12\x17.krate.v1.GossipRequest\x1a\x18.krate.v1.GossipResponseB\x8e\x01\n" +
 	"\fcom.krate.v1B\n" +
-	"KrateProtoP\x01Z(github.com/krigsherre/krate/peer;kratev1\xa2\x02\x03KXX\xaa\x02\bKrate.V1\xca\x02\bKrate\\V1\xe2\x02\x14Krate\\V1\\GPBMetadata\xea\x02\tKrate::V1b\x06proto3"
+	"KrateProtoP\x01Z1github.com/krigsherre/krate/internal/peer;kratev1\xa2\x02\x03KXX\xaa\x02\bKrate.V1\xca\x02\bKrate\\V1\xe2\x02\x14Krate\\V1\\GPBMetadata\xea\x02\tKrate::V1b\x06proto3"
 
 var (
 	file_krate_proto_rawDescOnce sync.Once
