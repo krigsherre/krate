@@ -147,7 +147,6 @@ func (m *Mesh) refresh(ctx context.Context) {
 			if p.Healthy {
 				continue
 			}
-			// Attempt to redial unhealthy peer
 			m.logger.Debug("retrying connection to unhealthy peer", "id", id, "addr", p.GRPCAddr)
 			conn, err := grpc.NewClient(p.GRPCAddr, dialOpts...)
 			if err == nil {

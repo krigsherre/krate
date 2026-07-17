@@ -99,7 +99,6 @@ func (m *Membership) Discover(ctx context.Context) ([]MemberInfo, error) {
 	}
 
 	if len(toDelete) > 0 {
-		// Clean up expired members asynchronously
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -113,7 +112,6 @@ func (m *Membership) Discover(ctx context.Context) ([]MemberInfo, error) {
 }
 
 func (m *Membership) Refresh(ctx context.Context, info MemberInfo) error {
-	// Update RegisteredAt timestamp to keep heartbeat alive
 	info.RegisteredAt = time.Now().UnixMilli()
 	return m.Register(ctx, info)
 }
