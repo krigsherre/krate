@@ -8,14 +8,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/krigsherre/krate/borrow"
-	"github.com/krigsherre/krate/cluster"
+	"golang.org/x/sys/cpu"
+
+	"github.com/krigsherre/krate/internal/borrow"
+	"github.com/krigsherre/krate/internal/cluster"
 	"github.com/krigsherre/krate/internal/clock"
-	"github.com/krigsherre/krate/metrics"
-	"github.com/krigsherre/krate/peer"
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	"github.com/krigsherre/krate/internal/metrics"
+	"github.com/krigsherre/krate/internal/peer"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 	"github.com/krigsherre/krate/routing"
-	"github.com/krigsherre/krate/sketch"
+	"github.com/krigsherre/krate/internal/sketch"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -24,7 +26,7 @@ const shardCount = 64
 type bucketShard struct {
 	mu      sync.RWMutex
 	buckets map[string]*bucket
-	_pad    [24]byte
+	_pad    cpu.CacheLinePad
 }
 
 type peerState struct {
@@ -173,11 +175,26 @@ func newLimiter(rdb redis.UniversalClient, opts options) (*limiter, error) {
 	l.heartbeat = hb
 
 	mesh := peer.NewMesh(opts.instanceID, membership, opts.gossipInterval, opts.gzipCompression, logger)
+	mesh.SetPeerRemovedCallback(func(peerID string) {
+		l.gossiper.RemovePeer(peerID)
+		if l.router != nil {
+			if pr, ok := l.router.(routing.PeerAwareRouter); ok {
+				pr.RemovePeer(peerID)
+			}
+		}
+	})
 	mesh.Start(ctx)
 	l.mesh = mesh
 
 	l.wg.Add(1)
 	go l.gossipLoop(ctx)
+
+	if opts.evictionInterval > 0 && opts.evictionPolicy != nil {
+		jan := NewJanitor(opts.evictionInterval, func(nowMs int64) {
+			l.evictInactiveKeys(opts.evictionPolicy, nowMs)
+		})
+		jan.Start(ctx, l.clock)
+	}
 
 	pc := peer.NewPeerClient(opts.probeTimeout, logger)
 	probeMode := peer.ProbeSequential
@@ -340,6 +357,7 @@ func (l *limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error
 
 	start := l.clock.Now()
 	b := l.getOrCreateBucket(key)
+	b.updateAccess(start.UnixMilli())
 
 	if b.tryConsume(n) {
 		rem := b.remaining()
@@ -616,4 +634,47 @@ func (l *limiter) getBucketsConsumed(keys []string) map[string]uint64 {
 	}
 
 	return out
+}
+
+func (l *limiter) evictInactiveKeys(policy EvictionPolicy, nowMs int64) {
+	var allEvicted []string
+
+	for i := range l.shards {
+		shard := &l.shards[i]
+
+		shard.mu.RLock()
+		var keysToEvict []string
+		for key, b := range shard.buckets {
+			if policy.ShouldEvict(b, nowMs) && !b.isPreBorrowing() {
+				keysToEvict = append(keysToEvict, key)
+			}
+		}
+		shard.mu.RUnlock()
+
+		if len(keysToEvict) == 0 {
+			continue
+		}
+
+		shard.mu.Lock()
+		for _, key := range keysToEvict {
+			if b, ok := shard.buckets[key]; ok && policy.ShouldEvict(b, nowMs) && !b.isPreBorrowing() {
+				delete(shard.buckets, key)
+				allEvicted = append(allEvicted, key)
+			}
+		}
+		shard.mu.Unlock()
+	}
+
+	if len(allEvicted) == 0 {
+		return
+	}
+
+	l.borrowMgr.EvictKeys(allEvicted)
+	l.gossiper.EvictKeys(allEvicted)
+	if l.router != nil {
+		if er, ok := l.router.(routing.EvictionAwareRouter); ok {
+			er.EvictKeys(allEvicted)
+		}
+	}
+	l.logger.Debug("evicted inactive rate limit keys in batch", "count", len(allEvicted))
 }
