@@ -47,8 +47,8 @@ func (m *Membership) Register(ctx context.Context, info MemberInfo) error {
 		return fmt.Errorf("marshal member info: %w", err)
 	}
 
-	key := m.prefix + info.ID
-	if err := m.client.Set(ctx, key, data, m.ttl).Err(); err != nil {
+	hashKey := m.prefix + "members"
+	if err := m.client.HSet(ctx, hashKey, info.ID, data).Err(); err != nil {
 		return fmt.Errorf("register member %s: %w", info.ID, err)
 	}
 
@@ -57,8 +57,8 @@ func (m *Membership) Register(ctx context.Context, info MemberInfo) error {
 }
 
 func (m *Membership) Deregister(ctx context.Context, id string) error {
-	key := m.prefix + id
-	err := m.client.Del(ctx, key).Err()
+	hashKey := m.prefix + "members"
+	err := m.client.HDel(ctx, hashKey, id).Err()
 	if err != nil && err != redis.Nil {
 		return fmt.Errorf("deregister member %s: %w", id, err)
 	}
@@ -67,52 +67,51 @@ func (m *Membership) Deregister(ctx context.Context, id string) error {
 }
 
 func (m *Membership) Discover(ctx context.Context) ([]MemberInfo, error) {
-	pattern := m.prefix + "*"
-	var allKeys []string
-
-	var cursor uint64
-	for {
-		keys, nextCursor, err := m.client.Scan(ctx, cursor, pattern, 256).Result()
-		if err != nil {
-			return nil, fmt.Errorf("scan members: %w", err)
-		}
-		allKeys = append(allKeys, keys...)
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
+	hashKey := m.prefix + "members"
+	vals, err := m.client.HGetAll(ctx, hashKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("hgetall members: %w", err)
 	}
 
-	if len(allKeys) == 0 {
+	if len(vals) == 0 {
 		return []MemberInfo{}, nil
 	}
 
-	vals, err := m.client.MGet(ctx, allKeys...).Result()
-	if err != nil {
-		return nil, fmt.Errorf("mget members: %w", err)
-	}
+	now := time.Now().UnixMilli()
+	ttlMs := m.ttl.Milliseconds()
 
 	members := make([]MemberInfo, 0, len(vals))
-	for i, v := range vals {
-		if v == nil {
-			continue
-		}
-		s, ok := v.(string)
-		if !ok {
-			m.logger.Warn("unexpected MGET value type", "key", allKeys[i])
-			continue
-		}
+	var toDelete []string
+
+	for id, s := range vals {
 		var info MemberInfo
 		if err := json.Unmarshal([]byte(s), &info); err != nil {
-			m.logger.Warn("failed to unmarshal member", "key", allKeys[i], "error", err)
+			m.logger.Warn("failed to unmarshal member", "id", id, "error", err)
 			continue
 		}
+
+		if now-info.RegisteredAt > ttlMs {
+			toDelete = append(toDelete, id)
+			continue
+		}
+
 		members = append(members, info)
+	}
+
+	if len(toDelete) > 0 {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := m.client.HDel(bgCtx, hashKey, toDelete...).Err(); err != nil {
+				m.logger.Warn("failed to delete expired members", "error", err)
+			}
+		}()
 	}
 
 	return members, nil
 }
 
 func (m *Membership) Refresh(ctx context.Context, info MemberInfo) error {
+	info.RegisteredAt = time.Now().UnixMilli()
 	return m.Register(ctx, info)
 }

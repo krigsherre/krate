@@ -37,7 +37,7 @@ func TestIntegration_LimitAccuracy(t *testing.T) {
 	const globalLimit = 300
 	const windowSize = 10 * time.Second
 
-	limiters := make([]*krate.Limiter, numNodes)
+	limiters := make([]krate.Limiter, numNodes)
 	regs := make([]*prometheus.Registry, numNodes)
 
 	for i := 0; i < numNodes; i++ {
@@ -61,11 +61,9 @@ func TestIntegration_LimitAccuracy(t *testing.T) {
 		limiters[i] = l
 		t.Cleanup(func() { l.Close() })
 	}
-
 	time.Sleep(500 * time.Millisecond)
 
 	ctx := context.Background()
-
 	var allowedCount atomic.Int64
 	var rejectedCount atomic.Int64
 	var wg sync.WaitGroup
@@ -88,11 +86,9 @@ func TestIntegration_LimitAccuracy(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
 	poolKey := fmt.Sprintf("krate:%s:pool", key)
 	redisVal, _ := rdb.Get(ctx, poolKey).Result()
 	t.Logf("At end of Phase A: Redis Pool = %s", redisVal)
-
 	for i, reg := range regs {
 		mfs, _ := reg.Gather()
 		for _, mf := range mfs {
@@ -112,9 +108,7 @@ func TestIntegration_LimitAccuracy(t *testing.T) {
 	if rejectedCount.Load() > 15 {
 		t.Errorf("Expected at most 15 false rejections, got %d", rejectedCount.Load())
 	}
-
 	time.Sleep(200 * time.Millisecond)
-
 	allowedCount.Store(0)
 	rejectedCount.Store(0)
 
@@ -153,7 +147,6 @@ func TestIntegration_LimitAccuracy(t *testing.T) {
 	totalAllowed := phaseAAllowed + allowedCount.Load()
 	t.Logf("Phase B (Over Limit): Allowed in Phase B: %d, Total Allowed: %d, Rejected in Phase B: %d",
 		allowedCount.Load(), totalAllowed, rejectedCount.Load())
-
 	if totalAllowed > globalLimit+15 {
 		t.Errorf("Over-admission leak! Allowed %d requests, limit is %d", totalAllowed, globalLimit)
 	}
@@ -163,11 +156,9 @@ func TestIntegration_RouterComparison(t *testing.T) {
 	rdb := setupRedis(t)
 	key := uniqueKey(t)
 	t.Cleanup(func() { cleanupKeys(t, rdb, "krate:"+key+":*") })
-
 	runRoutingTest := func(t *testing.T, useEMARouter bool) (int64, time.Duration) {
 		t.Helper()
 		ctx := context.Background()
-
 		regA := prometheus.NewRegistry()
 		lA, err := krate.New(rdb,
 			krate.WithInstanceID(fmt.Sprintf("node-A-%s", uniqueKey(t))),
@@ -184,9 +175,7 @@ func TestIntegration_RouterComparison(t *testing.T) {
 			t.Fatalf("failed to create node A: %v", err)
 		}
 		defer lA.Close()
-
 		_, _ = lA.AllowN(ctx, key, 1000)
-
 		var rtr routing.Router = routing.NewDefaultRouter()
 		if useEMARouter {
 			rtr = routing.NewEMAPredictiveRouter(0.5)
@@ -210,11 +199,8 @@ func TestIntegration_RouterComparison(t *testing.T) {
 			t.Fatalf("failed to create node B: %v", err)
 		}
 		defer lB.Close()
-
 		time.Sleep(200 * time.Millisecond)
-
 		_, _ = lA.AllowN(ctx, key, 4000)
-
 		start := time.Now()
 		var wg sync.WaitGroup
 		for i := 0; i < 50; i++ {
@@ -226,7 +212,6 @@ func TestIntegration_RouterComparison(t *testing.T) {
 		}
 		wg.Wait()
 		duration := time.Since(start)
-
 		mfs, _ := regB.Gather()
 		var staleProbes int64
 		for _, mf := range mfs {

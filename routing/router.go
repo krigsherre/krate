@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/krigsherre/krate/sketch"
+	"github.com/krigsherre/krate/internal/sketch"
 )
 
 type Decision int
@@ -25,6 +25,16 @@ type RouteContext struct {
 type Router interface {
 	Decide(ctx context.Context, rc *RouteContext) (Decision, error)
 	Init(gossiper *sketch.Gossiper, logger *slog.Logger)
+}
+
+type PeerAwareRouter interface {
+	Router
+	RemovePeer(peerID string)
+}
+
+type EvictionAwareRouter interface {
+	Router
+	EvictKeys(keys []string)
 }
 
 type DefaultRouter struct{}

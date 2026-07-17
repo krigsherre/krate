@@ -6,8 +6,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
-	"github.com/krigsherre/krate/sketch"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
+	"github.com/krigsherre/krate/internal/sketch"
 )
 
 const (

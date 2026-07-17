@@ -17,11 +17,17 @@ type Clock interface {
 	After(d time.Duration) <-chan time.Time
 }
 
-type Limiter struct {
+type Limiter interface {
+	Allow(ctx context.Context, key string) (bool, error)
+	AllowN(ctx context.Context, key string, n uint64) (bool, error)
+	Close() error
+}
+
+type distributedLimiter struct {
 	inner *limiter
 }
 
-func New(rdb redis.UniversalClient, opts ...Option) (*Limiter, error) {
+func New(rdb redis.UniversalClient, opts ...Option) (Limiter, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
@@ -40,17 +46,17 @@ func New(rdb redis.UniversalClient, opts ...Option) (*Limiter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Limiter{inner: l}, nil
+	return &distributedLimiter{inner: l}, nil
 }
 
-func (l *Limiter) Allow(ctx context.Context, key string) (bool, error) {
+func (l *distributedLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	return l.inner.Allow(ctx, key)
 }
 
-func (l *Limiter) AllowN(ctx context.Context, key string, n uint64) (bool, error) {
+func (l *distributedLimiter) AllowN(ctx context.Context, key string, n uint64) (bool, error) {
 	return l.inner.AllowN(ctx, key, n)
 }
 
-func (l *Limiter) Close() error {
+func (l *distributedLimiter) Close() error {
 	return l.inner.Close()
 }

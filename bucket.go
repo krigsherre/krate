@@ -7,11 +7,12 @@ import (
 )
 
 type bucket struct {
-	mu       sync.Mutex
-	local    *LocalBucket
-	window   *Window
-	key      string
-	consumed atomic.Uint64
+	mu         sync.Mutex
+	local      *LocalBucket
+	window     *Window
+	key        string
+	consumed   atomic.Uint64
+	lastAccess atomic.Int64
 
 	redisExhausted atomic.Bool
 	preBorrowing   atomic.Bool
@@ -24,7 +25,16 @@ func newBucket(key string, limit uint64, windowType WindowType, windowSize time.
 		key:    key,
 	}
 	b.consumed.Store(0)
+	b.lastAccess.Store(time.Now().UnixMilli())
 	return b
+}
+
+func (b *bucket) updateAccess(nowUnixMs int64) {
+	b.lastAccess.Store(nowUnixMs)
+}
+
+func (b *bucket) getLastAccess() int64 {
+	return b.lastAccess.Load()
 }
 
 func (b *bucket) tryConsume(n uint64) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"go.uber.org/zap/exp/zapslog"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/krigsherre/krate"
 	"github.com/krigsherre/krate/routing"
@@ -419,7 +423,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 	logf("krate: pools ready in %v", time.Since(t0).Truncate(time.Millisecond))
 
 	logf("krate: creating %d limiter instances...", cfg.Instances)
-	lims := make([]*krate.Limiter, cfg.Instances)
+	lims := make([]krate.Limiter, cfg.Instances)
 	regs := make([]*prometheus.Registry, cfg.Instances)
 
 	gossipInterval := time.Hour
@@ -429,18 +433,46 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		heartbeatInterval = 10 * time.Millisecond
 	}
 
+	bws := &zapcore.BufferedWriteSyncer{
+		WS:            zapcore.AddSync(os.Stderr),
+		Size:          256 * 1024,
+		FlushInterval: 100 * time.Millisecond,
+	}
+	defer bws.Stop()
+
+	zapCore := zapcore.NewCore(
+		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+		bws,
+		zap.WarnLevel,
+	)
+	zapLogger := zap.New(zapCore)
+	defer zapLogger.Sync()
+
+	zapSlogHandler := zapslog.NewHandler(zapLogger.Core())
+	zapSlogLogger := slog.New(zapSlogHandler)
+
 	for i := 0; i < cfg.Instances; i++ {
 		reg := prometheus.NewRegistry()
 		var rtr routing.Router = routing.NewDefaultRouter()
 		if cfg.ProbeK > 0 {
 			rtr = routing.NewEMAPredictiveRouter(0.5)
 		}
+		n := uint64(cfg.Instances)
+		maxBorrow := cfg.Limit / (2 * n)
+		minBorrow := cfg.Limit / (10 * n)
+		if minBorrow == 0 {
+			minBorrow = 1
+		}
+		if maxBorrow == 0 {
+			maxBorrow = 1
+		}
 		l, err := krate.New(rdb,
 			krate.WithInstanceID(fmt.Sprintf("%s-%d", cfg.Name, i)),
 			krate.WithLimit(cfg.Limit),
 			krate.WithWindow(cfg.Window),
-			krate.WithMaxBorrow(cfg.Limit/uint64(cfg.Instances)),
-			krate.WithMinBorrow(cfg.Limit/uint64(cfg.Instances)),
+			krate.WithMaxBorrow(maxBorrow),
+			krate.WithMinBorrow(minBorrow),
+			krate.WithAdaptiveBorrow(true),
 			krate.WithReservedMinimum(cfg.ReservedMin),
 			krate.WithPreBorrowThreshold(0.2),
 			krate.WithProbeK(cfg.ProbeK),
@@ -449,6 +481,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 			krate.WithHeartbeatInterval(heartbeatInterval),
 			krate.WithMetrics(reg),
 			krate.WithRouter(rtr),
+			krate.WithLogger(zapSlogLogger),
 		)
 		if err != nil {
 			logf("krate.New(%d): %v", i, err)
@@ -479,7 +512,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		var warmupWg sync.WaitGroup
 		for i, l := range lims {
 			warmupWg.Add(1)
-			go func(lim *krate.Limiter, instID int) {
+			go func(lim krate.Limiter, instID int) {
 				defer warmupWg.Done()
 				for k := 0; k < warmupN; k++ {
 					lim.Allow(ctx, fmt.Sprintf("key:%d", k))
@@ -543,7 +576,7 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		}
 		for g := 0; g < workers; g++ {
 			wg.Add(1)
-			go func(lim *krate.Limiter, instID, gorID int) {
+			go func(lim krate.Limiter, instID, gorID int) {
 				defer wg.Done()
 				rng := rand.New(rand.NewPCG(
 					uint64(instID*1000+gorID),

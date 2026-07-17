@@ -9,8 +9,8 @@ import (
 
 	"google.golang.org/grpc"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
-	"github.com/krigsherre/krate/sketch"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
+	"github.com/krigsherre/krate/internal/sketch"
 )
 
 type mockPeerGRPCClient struct {

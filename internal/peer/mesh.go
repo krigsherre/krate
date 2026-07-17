@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	_ "google.golang.org/grpc/encoding/gzip"
 
-	"github.com/krigsherre/krate/cluster"
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	"github.com/krigsherre/krate/internal/cluster"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 )
 
 type MemberDiscoverer interface {
@@ -32,9 +32,10 @@ type Mesh struct {
 	instanceID string
 	membership MemberDiscoverer
 
-	mu    sync.RWMutex
-	peers map[string]*Peer
-	conns map[string]*grpc.ClientConn
+	mu            sync.RWMutex
+	peers         map[string]*Peer
+	conns         map[string]*grpc.ClientConn
+	onPeerRemoved func(id string)
 
 	logger      *slog.Logger
 	interval    time.Duration
@@ -56,6 +57,12 @@ func NewMesh(instanceID string, membership MemberDiscoverer, interval time.Durat
 		interval:    interval,
 		gzipEnabled: gzipEnabled,
 	}
+}
+
+func (m *Mesh) SetPeerRemovedCallback(fn func(string)) {
+	m.mu.Lock()
+	m.onPeerRemoved = fn
+	m.mu.Unlock()
 }
 
 func (m *Mesh) Start(ctx context.Context) {
@@ -121,12 +128,34 @@ func (m *Mesh) refresh(ctx context.Context) {
 			}
 			delete(m.peers, id)
 			m.logger.Debug("peer removed", "id", id)
+			if m.onPeerRemoved != nil {
+				m.onPeerRemoved(id)
+			}
 		}
 	}
 
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	if m.gzipEnabled {
+		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor("gzip")))
+	}
+
 	for id, member := range current {
-		if _, exists := m.peers[id]; exists {
-			m.peers[id].LastSeen = time.Now()
+		if p, exists := m.peers[id]; exists {
+			p.LastSeen = time.Now()
+			if p.Healthy {
+				continue
+			}
+			m.logger.Debug("retrying connection to unhealthy peer", "id", id, "addr", p.GRPCAddr)
+			conn, err := grpc.NewClient(p.GRPCAddr, dialOpts...)
+			if err == nil {
+				p.Client = kratev1.NewKratePeerServiceClient(conn)
+				p.Conn = conn
+				p.Healthy = true
+				m.conns[id] = conn
+				m.logger.Debug("peer reconnected", "id", id, "addr", p.GRPCAddr)
+			}
 			continue
 		}
 
@@ -135,12 +164,6 @@ func (m *Mesh) refresh(ctx context.Context) {
 			grpcAddr = member.GossipAddr
 		}
 
-		dialOpts := []grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-		}
-		if m.gzipEnabled {
-			dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor("gzip")))
-		}
 		conn, err := grpc.NewClient(grpcAddr, dialOpts...)
 
 		p := &Peer{

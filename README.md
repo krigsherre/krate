@@ -4,7 +4,7 @@
   <br><br>
 
   **The Ultra-Fast Distributed Rate Limiter for Go**<br><br>
-  🚀 **Up to 5,500x Faster Latency** &nbsp;&bull;&nbsp; 📈 **Up to 48x Higher Throughput** &nbsp;&bull;&nbsp; 📉 **99% Less Redis Traffic**<br><br>
+  🚀 **Up to 5,100x Faster Latency** &nbsp;&bull;&nbsp; 📈 **Up to 50x Higher Throughput** &nbsp;&bull;&nbsp; 📉 **99% Less Redis Traffic**<br><br>
   *Powered by Local Token Borrowing, Map-based Top-N Delta Gossip, and Mesh Peer Routing.*
   <br>
 
@@ -78,27 +78,27 @@ To prove Krate handles every edge case, we test it against distinct workload pro
 
 | Scenario | Krate Throughput | Redis-Only Throughput | Speedup | Redis Load Reduction |
 | :--- | :--- | :--- | :--- | :--- |
-| **API Gateway** | <kbd>2.69M req/s</kbd> | 56.0K req/s | <span style="color:green">**48.1x**</span> | **100%** |
-| **Multi-Tenant SaaS** | <kbd>2.21M req/s</kbd> | 55.2K req/s | <span style="color:green">**40.0x**</span> | **99%** |
-| **Peer Token Flow** | <kbd>1.50M req/s</kbd> | 56.2K req/s | <span style="color:green">**26.6x**</span> | **100%** |
-| **IP Throttling** | <kbd>579.7K req/s</kbd> | 59.5K req/s | <span style="color:green">**9.7x**</span> | **97%** |
-| **Per-User Limiting** | <kbd>718.9K req/s</kbd> | 56.7K req/s | <span style="color:green">**12.7x**</span> | **98%** |
-| **Peer Transfer** | <kbd>132.2K req/s</kbd> | 47.6K req/s | <span style="color:green">**2.8x**</span> | **93%** |
+| **API Gateway** | <kbd>2.74M req/s</kbd> | 57.5K req/s | <span style="color:green">**47.7x**</span> | **99%** |
+| **Multi-Tenant SaaS** | <kbd>1.67M req/s</kbd> | 57.6K req/s | <span style="color:green">**29.0x**</span> | **99%** |
+| **Peer Token Flow** | <kbd>2.93M req/s</kbd> | 58.5K req/s | <span style="color:green">**50.1x**</span> | **100%** |
+| **IP Throttling** | <kbd>608.3K req/s</kbd> | 55.4K req/s | <span style="color:green">**11.0x**</span> | **96%** |
+| **Per-User Limiting** | <kbd>581.6K req/s</kbd> | 47.5K req/s | <span style="color:green">**12.2x**</span> | **97%** |
+| **Peer Transfer** | <kbd>147.4K req/s</kbd> | 55.8K req/s | <span style="color:green">**2.6x**</span> | **94%** |
 
 ### Latency Profile & The Tail Trade-off
 
-While Krate is up to **5,500x faster** on average (p50), the asynchronous pre-borrowing engine can introduce lock contention at the extreme tail (p99.9). 
+While Krate is up to **5,100x faster** on average (p50), the asynchronous pre-borrowing engine can introduce lock contention at the extreme tail (p99.9). 
 
 | Scenario | Latency p50<br>(Krate / Redis) | Latency p99<br>(Krate / Redis) | Latency p99.9<br>(Krate / Redis) |
 | :--- | :--- | :--- | :--- |
-| **API Gateway** | **1.7μs** / 6.8ms | **1.2ms** / 13.2ms | **24.7ms** / 68.3ms |
-| **Multi-Tenant SaaS** | **1.7μs** / 7.0ms | **2.6ms** / 14.6ms | **32.6ms** / 28.3ms |
-| **Peer Token Flow** | **1.7μs** / 1.7ms | **689.7μs** / 2.8ms | **7.0ms** / 10.1ms |
-| **IP Throttling** | **1.8μs** / 9.9ms | **5.1ms** / 14.4ms | **205.5ms** / 53.4ms |
-| **Per-User Limiting** | **1.7μs** / 6.7ms | **3.5ms** / 15.4ms | **122.7ms** / 66.0ms |
-| **Peer Transfer** | **740.1μs** / 3.4ms | **4.0ms** / 17.1ms | **56.4ms** / 60.5ms |
+| **API Gateway** | **1.8μs** / 6.9ms | **2.0ms** / 9.8ms | **22.4ms** / 60.9ms |
+| **Multi-Tenant SaaS** | **1.9μs** / 6.9ms | **3.0ms** / 9.4ms | **18.8ms** / 20.8ms |
+| **Peer Token Flow** | **1.9μs** / 1.7ms | **6.0μs** / 2.5ms | **3.3ms** / 5.4ms |
+| **IP Throttling** | **2.0μs** / 10.3ms | **17.7ms** / 22.6ms | **175.2ms** / 46.2ms |
+| **Per-User Limiting** | **2.2μs** / 6.9ms | **7.9ms** / 17.8ms | **73.1ms** / 686.6ms |
+| **Peer Transfer** | **594.1μs** / 3.4ms | **4.2ms** / 8.5ms | **52.2ms** / 20.2ms |
 
-**The Trade-off Verdict**: You are trading extreme tail consistency (which occasionally blocks a goroutine for ~200ms while it waits for a Redis pre-borrow batch to finish under heavy lock contention) for an overall system throughput increase of **2x-48x+** and a massive reduction in database costs.
+**The Trade-off Verdict**: You are trading extreme tail consistency (which occasionally blocks a goroutine for ~200ms while it waits for a Redis pre-borrow batch to finish under heavy lock contention) for an overall system throughput increase of **2x-50x+** and a massive reduction in database costs.
 
 ### 🎯 Accuracy & Policy Enforcement (Why Krate Has Fewer False Rejections)
 

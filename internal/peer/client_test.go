@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	kratev1 "github.com/krigsherre/krate/peer/peerpb"
+	kratev1 "github.com/krigsherre/krate/internal/peer/peerpb"
 )
 
 func TestClientRequestTokens(t *testing.T) {

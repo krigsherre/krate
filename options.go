@@ -47,9 +47,12 @@ type options struct {
 	metrics prometheus.Registerer
 	clock   Clock
 
-	router          routing.Router
-	maxGossipKeys   int
-	gzipCompression bool
+	router           routing.Router
+	maxGossipKeys    int
+	gzipCompression  bool
+	evictionInterval time.Duration
+	idleTimeout      time.Duration
+	evictionPolicy   EvictionPolicy
 }
 
 func defaultOptions() options {
@@ -80,6 +83,9 @@ func defaultOptions() options {
 		router:             routing.NewDefaultRouter(),
 		maxGossipKeys:      3000,
 		gzipCompression:    false,
+		evictionInterval:   10 * time.Second,
+		idleTimeout:        60 * time.Second,
+		evictionPolicy:     NewIdleEvictionPolicy(60 * time.Second),
 	}
 }
 
@@ -146,4 +152,21 @@ func WithMaxGossipKeys(n int) Option {
 
 func WithGzipCompression(b bool) Option {
 	return func(o *options) { o.gzipCompression = b }
+}
+
+func WithEvictionInterval(d time.Duration) Option {
+	return func(o *options) { o.evictionInterval = d }
+}
+
+func WithIdleTimeout(d time.Duration) Option {
+	return func(o *options) {
+		o.idleTimeout = d
+		if ip, ok := o.evictionPolicy.(*IdleEvictionPolicy); ok {
+			ip.idleTimeout = d
+		}
+	}
+}
+
+func WithEvictionPolicy(p EvictionPolicy) Option {
+	return func(o *options) { o.evictionPolicy = p }
 }

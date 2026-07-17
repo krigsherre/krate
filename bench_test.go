@@ -10,7 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/krigsherre/krate"
-	"github.com/krigsherre/krate/sketch"
+	"github.com/krigsherre/krate/internal/sketch"
 )
 
 func redisClient(tb testing.TB) *redis.Client {
@@ -29,7 +29,7 @@ func redisClient(tb testing.TB) *redis.Client {
 	return rdb
 }
 
-func benchLimiter(tb testing.TB, rdb *redis.Client, key string, extra ...krate.Option) (*krate.Limiter, string) {
+func benchLimiter(tb testing.TB, rdb *redis.Client, key string, extra ...krate.Option) (krate.Limiter, string) {
 	tb.Helper()
 	instID := fmt.Sprintf("bench-%s-%d", tb.Name(), time.Now().UnixNano())
 	base := []krate.Option{

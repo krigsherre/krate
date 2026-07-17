@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+	"golang.org/x/sys/cpu"
 
 	"github.com/krigsherre/krate/internal/clock"
 )
@@ -34,6 +35,7 @@ const managerShardCount = 64
 type managerShard struct {
 	mu         sync.Mutex
 	activeKeys map[string]*keyState
+	_pad       cpu.CacheLinePad
 }
 
 type BorrowManager struct {
@@ -194,6 +196,26 @@ func (m *BorrowManager) Reset(key string) {
 		ks.borrowed = 0
 	}
 	shard.mu.Unlock()
+}
+
+func (m *BorrowManager) EvictKeys(keys []string) {
+	var shardToKeys [managerShardCount][]string
+	for _, k := range keys {
+		idx := m.shardIndex(k)
+		shardToKeys[idx] = append(shardToKeys[idx], k)
+	}
+
+	for idx, shKeys := range shardToKeys {
+		if len(shKeys) == 0 {
+			continue
+		}
+		shard := &m.shards[idx]
+		shard.mu.Lock()
+		for _, k := range shKeys {
+			delete(shard.activeKeys, k)
+		}
+		shard.mu.Unlock()
+	}
 }
 
 type keyVal struct {
