@@ -455,7 +455,15 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		reg := prometheus.NewRegistry()
 		var rtr routing.Router = routing.NewDefaultRouter()
 		if cfg.ProbeK > 0 {
-			rtr = routing.NewEMAPredictiveRouter(0.5)
+			rl, err:=routing.NewRLPredictiveRouter(
+				"krate_dqn.onnx",
+				"/opt/homebrew/lib/libonnxruntime.dylib",
+			)
+			if err != nil {
+				logf("FATAL: failed to init RL Router for instance %d: %v",i,err)
+				os.Exit(1)
+			}
+			rtr = rl
 		}
 		n := uint64(cfg.Instances)
 		maxBorrow := cfg.Limit / (2 * n)
@@ -485,6 +493,14 @@ func runKrate(rdb *redis.Client, cfg scenarioConfig) result {
 		)
 		if err != nil {
 			logf("krate.New(%d): %v", i, err)
+			if closer, ok := rtr.(interface{ Close() }); ok {
+				closer.Close()
+			}
+			for j := 0; j < i; j++ {
+				if lims[j] != nil {
+					lims[j].Close()
+				}
+			}
 			os.Exit(1)
 		}
 		lims[i] = l

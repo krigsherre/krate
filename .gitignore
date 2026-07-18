@@ -30,3 +30,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+#machine learning artifacts
+*.onnx
+*.pth
+ml/venv/
+__pycache__/

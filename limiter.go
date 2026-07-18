@@ -574,10 +574,15 @@ func (l *limiter) Close() error {
 
 	l.cancel()
 	l.wg.Wait()
+	// -- new code : free onnx memory
+	if l.router != nil {
+		if closer, ok := l.router.(interface{ Close()}); ok {
+			closer.Close()
+		}
+	}
+
 
 	ctx := context.Background()
-
-
 
 	if l.heartbeat != nil {
 		l.heartbeat.Stop()
